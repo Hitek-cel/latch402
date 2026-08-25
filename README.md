@@ -10,10 +10,14 @@ Coinbase are members. Nobody needs another paywall.
 
 What is *not* finished is the join between "the money moved" and "the customer
 was served". Those are two different systems, and every gap between them is
-either theft or free goods. Published research on x402 found that **every
-evaluated facilitator violated at least one security rule**, and that **all
-seven official reference server SDKs lack rollback for post-verification side
-effects**. This is a small, hard library for exactly that seam.
+either theft or free goods.
+
+Published security research on x402 ([arXiv:2607.19545](https://arxiv.org/abs/2607.19545))
+reports that every facilitator it evaluated violated at least one of its eight
+security rules, and that all seven official reference server SDKs it examined
+lack rollback for post-verification side effects. Those findings are that
+paper's, not independent testing by this project. This is a small, hard library
+for exactly that seam.
 
 ---
 
