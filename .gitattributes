@@ -1,0 +1,6 @@
+# Normalise line endings so collaborators on other platforms don't see
+# every file as modified.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.svg text eol=lf

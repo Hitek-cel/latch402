@@ -183,6 +183,12 @@ never came back.
 `memoryJournal()` is the reference implementation and the contract the SQL one
 must meet. Its doc comment carries the SQL translation.
 
+## Using this?
+
+If you're integrating it, or you hit a failure mode it doesn't handle, open an
+issue. Reports of cases that break it are more useful to this project than
+stars are.
+
 ## Honest limits
 
 - The in-memory journal is for tests and local development only.

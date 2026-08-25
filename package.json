@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "A settlement-safe gate for paid HTTP: charge if and only if delivered.",
   "type": "module",
-  "private": true,
   "exports": {
     ".": "./src/index.ts"
   },
@@ -30,6 +29,12 @@
   "license": "MIT",
   "files": [
     "src",
-    "README.md"
-  ]
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hitek-cel/latch402.git"
+  },
+  "author": "Hitek-cel"
 }
