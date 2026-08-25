@@ -1,0 +1,336 @@
+<title>Latch Settlement Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  /* Greenbar: the fanfold stock settlement journals were printed on.
+     Light is the primary world; dark is the same stock under a desk lamp. */
+  :root {
+    --paper:      #f2f4ee;
+    --bar:        #e2eade;
+    --card:       #fbfcf9;
+    --ink:        #17201c;
+    --ink-soft:   #4a574f;
+    --ink-faint:  #7d8a82;
+    --rule:       #c6d0c6;
+    --rule-soft:  #dde4db;
+    --seal:       #9a3b1f;
+    --ok:         #2c6a4c;
+    --bad:        #a3302c;
+    --warn:       #96661a;
+    --lit:        #1d5c8f;
+    --shadow:     rgba(23, 32, 28, 0.10);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #111613;
+      --bar:       #202b23;
+      --card:      #161d18;
+      --ink:       #e2e9e2;
+      --ink-soft:  #a2b0a6;
+      --ink-faint: #6d7d72;
+      --rule:      #2c3831;
+      --rule-soft: #222c26;
+      --seal:      #d2704c;
+      --ok:        #5aa77c;
+      --bad:       #d9645e;
+      --warn:      #c99a44;
+      --lit:       #64a6d8;
+      --shadow:    rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #111613;
+    --bar:       #202b23;
+    --card:      #161d18;
+    --ink:       #e2e9e2;
+    --ink-soft:  #a2b0a6;
+    --ink-faint: #6d7d72;
+    --rule:      #2c3831;
+    --rule-soft: #222c26;
+    --seal:      #d2704c;
+    --ok:        #5aa77c;
+    --bad:       #d9645e;
+    --warn:      #c99a44;
+    --lit:       #64a6d8;
+    --shadow:    rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 22px 64px; }
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  header.masthead {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px;
+    padding-bottom: 14px; border-bottom: 2px solid var(--ink); margin-bottom: 6px;
+  }
+  .mark {
+    font-family: "Zilla Slab", Georgia, serif; font-weight: 700;
+    font-size: clamp(28px, 4.4vw, 40px); letter-spacing: -0.015em; line-height: 1;
+  }
+  .tagline { color: var(--ink-soft); font-size: 14px; flex: 1; min-width: 240px; }
+  .rule-under { height: 1px; background: var(--rule); margin-bottom: 26px; }
+
+  .invariant {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px; letter-spacing: 0.02em; color: var(--ink-soft);
+    background: var(--bar); border: 1px solid var(--rule-soft);
+    padding: 7px 11px; border-radius: 2px; white-space: nowrap;
+  }
+  .invariant b { color: var(--seal); font-weight: 700; }
+
+  /* ── grid ─────────────────────────────────────────────────── */
+  .console {
+    display: grid; gap: 22px;
+    grid-template-columns: 210px minmax(0, 1fr) 260px;
+    align-items: start;
+  }
+  @media (max-width: 1040px) { .console { grid-template-columns: 200px minmax(0, 1fr); } }
+  @media (max-width: 760px)  { .console { grid-template-columns: minmax(0, 1fr); } }
+
+  h2.panel {
+    font-family: "Public Sans", sans-serif; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-faint);
+    margin: 0 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--rule-soft);
+  }
+
+  /* ── scenario rail ───────────────────────────────────────── */
+  h3.group {
+    font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-faint);
+    margin: 18px 0 7px;
+  }
+  h3.group:first-of-type { margin-top: 0; }
+  .scenario {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    font-family: inherit; font-size: 14px; color: var(--ink);
+    background: var(--card); border: 1px solid var(--rule-soft);
+    border-left: 3px solid transparent;
+    padding: 8px 11px; margin-bottom: 5px; border-radius: 2px;
+    transition: border-color .14s, background .14s, transform .14s;
+  }
+  .scenario:hover { border-color: var(--rule); transform: translateX(2px); }
+  .scenario.active {
+    border-left-color: var(--seal); background: var(--bar);
+    font-weight: 600;
+  }
+  .scenario:focus-visible { outline: 2px solid var(--lit); outline-offset: 2px; }
+
+  /* ── books ───────────────────────────────────────────────── */
+  .books { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+  .book {
+    background: var(--card); border: 1px solid var(--rule-soft);
+    border-top: 2px solid var(--ink); border-radius: 2px; padding: 11px 13px;
+    transition: background .3s;
+  }
+  .book.flash { background: var(--bar); }
+  .book-label {
+    font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 3px;
+  }
+  .book-value {
+    font-family: "Zilla Slab", Georgia, serif; font-size: 27px; font-weight: 600;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+  }
+
+  .scenario-head { margin-bottom: 16px; }
+  .scenario-head h1 {
+    font-family: "Zilla Slab", Georgia, serif; font-size: 22px; font-weight: 600;
+    margin: 0 0 4px; text-wrap: balance;
+  }
+  .scenario-head p { margin: 0; color: var(--ink-soft); font-size: 14px; max-width: 62ch; }
+
+  /* ── the tape: greenbar fanfold ──────────────────────────── */
+  .tape-frame {
+    position: relative; border: 1px solid var(--rule); border-radius: 2px;
+    background: var(--card); box-shadow: 0 1px 3px var(--shadow); overflow: hidden;
+  }
+  /* sprocket margins, like tractor-feed paper */
+  .tape-frame::before, .tape-frame::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 15px; z-index: 2;
+    background:
+      repeating-linear-gradient(to bottom, transparent 0 9px, var(--rule-soft) 9px 15px),
+      var(--bar);
+    border-right: 1px solid var(--rule-soft);
+  }
+  .tape-frame::before { left: 0; }
+  .tape-frame::after { right: 0; border-right: none; border-left: 1px solid var(--rule-soft); }
+
+  #tape {
+    height: 380px; overflow-y: auto; overflow-x: auto;
+    margin: 0 15px; padding: 6px 0;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px; line-height: 1.5;
+  }
+  .line {
+    display: flex; gap: 9px; align-items: baseline;
+    padding: 3px 14px; white-space: nowrap;
+  }
+  /* the alternating green bands */
+  .line:nth-child(odd) { background: var(--bar); }
+  .t-seq { color: var(--ink-faint); width: 12px; flex: none; }
+  .t-state {
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    min-width: 88px; flex: none;
+  }
+  .t-call { color: var(--lit); min-width: 88px; flex: none; }
+  .t-code { color: var(--bad); font-weight: 700; min-width: 88px; flex: none; }
+  .t-detail, .t-body { color: var(--ink-soft); }
+  .line.served .t-body { color: var(--ok); font-weight: 500; white-space: pre-wrap; }
+  .line.note .t-body { font-style: italic; }
+  .line.note.alarm .t-body { color: var(--bad); font-style: normal; font-weight: 700; }
+
+  .s-quoted, .s-verifying { color: var(--ink-soft); }
+  .s-settling { color: var(--warn); }
+  .s-settled, .s-producing { color: var(--lit); }
+  .s-delivered { color: var(--ok); }
+  .s-void { color: var(--ink-faint); }
+  .s-refunding, .s-refunded { color: var(--warn); }
+  .s-stuck { color: var(--bad); }
+
+  /* ── pipeline ────────────────────────────────────────────── */
+  .node {
+    display: flex; align-items: center; gap: 9px;
+    font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+    color: var(--ink-faint); padding: 3px 0; transition: color .18s;
+  }
+  .node .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    border: 1px solid var(--rule); background: transparent; transition: all .18s;
+  }
+  .node.terminal .dot { border-radius: 1px; }
+  .node.on { color: var(--ink); font-weight: 700; }
+  .node.on .dot { background: var(--seal); border-color: var(--seal); box-shadow: 0 0 0 3px color-mix(in srgb, var(--seal) 22%, transparent); }
+
+  /* ── verdict stamp ───────────────────────────────────────── */
+  .stamp {
+    display: inline-block; font-family: "Zilla Slab", Georgia, serif;
+    font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
+    padding: 7px 14px; border: 2.5px solid currentColor; border-radius: 3px;
+    transform: rotate(-2.2deg); opacity: 0.92;
+  }
+  .stamp.holds  { color: var(--ok); }
+  .stamp.broken { color: var(--bad); }
+  .stamp.flagged { color: var(--warn); }
+  .stamp.pending { color: var(--ink-faint); border-style: dashed; }
+  #verdict-note { color: var(--ink-soft); font-size: 13.5px; margin: 12px 0 0; max-width: 40ch; }
+
+  /* ── receipts ────────────────────────────────────────────── */
+  .receipt {
+    border: 1px solid var(--rule-soft); border-left: 3px solid var(--rule);
+    background: var(--card); border-radius: 2px; padding: 7px 10px; margin-bottom: 6px;
+  }
+  .r-delivered { border-left-color: var(--ok); }
+  .r-void      { border-left-color: var(--ink-faint); }
+  .r-refunded  { border-left-color: var(--warn); }
+  .r-stuck     { border-left-color: var(--bad); }
+  .r-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .r-outcome {
+    font-family: "JetBrains Mono", monospace; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .r-amount { font-family: "JetBrains Mono", monospace; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .r-hash { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); margin-top: 2px; }
+  .chain-ok, .chain-bad {
+    font-family: "JetBrains Mono", monospace; font-size: 10.5px; margin: 8px 0 0;
+  }
+  .chain-ok { color: var(--ok); }
+  .chain-bad { color: var(--bad); }
+  .muted { color: var(--ink-faint); font-size: 13px; margin: 0; }
+
+  .stack { display: flex; flex-direction: column; gap: 22px; }
+
+  footer.note {
+    margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--rule-soft);
+    color: var(--ink-faint); font-size: 12.5px; max-width: 76ch;
+  }
+  footer.note code {
+    font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+    background: var(--bar); padding: 1px 4px; border-radius: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div class="mark">Latch</div>
+    <div class="tagline">Settlement console — a paid-HTTP gate, running live in this page.</div>
+    <div class="invariant">charged <b>&hArr;</b> delivered</div>
+  </header>
+  <div class="rule-under"></div>
+
+  <div class="console">
+    <aside>
+      <h2 class="panel">Scenarios</h2>
+      <div id="scenarios"></div>
+    </aside>
+
+    <main>
+      <div class="books">
+        <div class="book">
+          <span class="book-label">Buyer &middot; agt_scout7</span>
+          <span class="book-value" id="buyer">$1.00</span>
+        </div>
+        <div class="book">
+          <span class="book-label">Seller &middot; 0xtollgate</span>
+          <span class="book-value" id="seller">$0.00</span>
+        </div>
+      </div>
+
+      <div class="scenario-head">
+        <h1 id="scenario-title">&nbsp;</h1>
+        <p id="blurb">&nbsp;</p>
+      </div>
+
+      <div class="tape-frame">
+        <div id="tape"></div>
+      </div>
+    </main>
+
+    <aside class="stack">
+      <section>
+        <h2 class="panel">Invoice state</h2>
+        <div id="pipeline"></div>
+      </section>
+
+      <section>
+        <h2 class="panel">Verdict</h2>
+        <span class="stamp pending" id="verdict">idle</span>
+        <p id="verdict-note"></p>
+      </section>
+
+      <section>
+        <h2 class="panel">Receipt chain</h2>
+        <div id="chain"><p class="muted">No receipts yet.</p></div>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="note">
+    This page runs the actual library — <code>src/gate.ts</code>, <code>src/states.ts</code> and the
+    reference journal — bundled straight into the document. The tape prints real journal entries, the
+    books read real facilitator balances, and the verdict applies the same rule the test suite asserts
+    (<code>assertMoneyIsSound</code>). The payment network and the model are simulated so that failures
+    which would be expensive or impossible to stage for real can be triggered on demand.
+  </footer>
+</div>
+
+<script type="module">
+/*BUNDLE*/
+</script>

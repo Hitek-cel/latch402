@@ -1,0 +1,1796 @@
+<title>Latch Settlement Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  /* Greenbar: the fanfold stock settlement journals were printed on.
+     Light is the primary world; dark is the same stock under a desk lamp. */
+  :root {
+    --paper:      #f2f4ee;
+    --bar:        #e2eade;
+    --card:       #fbfcf9;
+    --ink:        #17201c;
+    --ink-soft:   #4a574f;
+    --ink-faint:  #7d8a82;
+    --rule:       #c6d0c6;
+    --rule-soft:  #dde4db;
+    --seal:       #9a3b1f;
+    --ok:         #2c6a4c;
+    --bad:        #a3302c;
+    --warn:       #96661a;
+    --lit:        #1d5c8f;
+    --shadow:     rgba(23, 32, 28, 0.10);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #111613;
+      --bar:       #202b23;
+      --card:      #161d18;
+      --ink:       #e2e9e2;
+      --ink-soft:  #a2b0a6;
+      --ink-faint: #6d7d72;
+      --rule:      #2c3831;
+      --rule-soft: #222c26;
+      --seal:      #d2704c;
+      --ok:        #5aa77c;
+      --bad:       #d9645e;
+      --warn:      #c99a44;
+      --lit:       #64a6d8;
+      --shadow:    rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #111613;
+    --bar:       #202b23;
+    --card:      #161d18;
+    --ink:       #e2e9e2;
+    --ink-soft:  #a2b0a6;
+    --ink-faint: #6d7d72;
+    --rule:      #2c3831;
+    --rule-soft: #222c26;
+    --seal:      #d2704c;
+    --ok:        #5aa77c;
+    --bad:       #d9645e;
+    --warn:      #c99a44;
+    --lit:       #64a6d8;
+    --shadow:    rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 22px 64px; }
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  header.masthead {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px;
+    padding-bottom: 14px; border-bottom: 2px solid var(--ink); margin-bottom: 6px;
+  }
+  .mark {
+    font-family: "Zilla Slab", Georgia, serif; font-weight: 700;
+    font-size: clamp(28px, 4.4vw, 40px); letter-spacing: -0.015em; line-height: 1;
+  }
+  .tagline { color: var(--ink-soft); font-size: 14px; flex: 1; min-width: 240px; }
+  .rule-under { height: 1px; background: var(--rule); margin-bottom: 26px; }
+
+  .invariant {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px; letter-spacing: 0.02em; color: var(--ink-soft);
+    background: var(--bar); border: 1px solid var(--rule-soft);
+    padding: 7px 11px; border-radius: 2px; white-space: nowrap;
+  }
+  .invariant b { color: var(--seal); font-weight: 700; }
+
+  /* ── grid ─────────────────────────────────────────────────── */
+  .console {
+    display: grid; gap: 22px;
+    grid-template-columns: 210px minmax(0, 1fr) 260px;
+    align-items: start;
+  }
+  @media (max-width: 1040px) { .console { grid-template-columns: 200px minmax(0, 1fr); } }
+  @media (max-width: 760px)  { .console { grid-template-columns: minmax(0, 1fr); } }
+
+  h2.panel {
+    font-family: "Public Sans", sans-serif; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-faint);
+    margin: 0 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--rule-soft);
+  }
+
+  /* ── scenario rail ───────────────────────────────────────── */
+  h3.group {
+    font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-faint);
+    margin: 18px 0 7px;
+  }
+  h3.group:first-of-type { margin-top: 0; }
+  .scenario {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    font-family: inherit; font-size: 14px; color: var(--ink);
+    background: var(--card); border: 1px solid var(--rule-soft);
+    border-left: 3px solid transparent;
+    padding: 8px 11px; margin-bottom: 5px; border-radius: 2px;
+    transition: border-color .14s, background .14s, transform .14s;
+  }
+  .scenario:hover { border-color: var(--rule); transform: translateX(2px); }
+  .scenario.active {
+    border-left-color: var(--seal); background: var(--bar);
+    font-weight: 600;
+  }
+  .scenario:focus-visible { outline: 2px solid var(--lit); outline-offset: 2px; }
+
+  /* ── books ───────────────────────────────────────────────── */
+  .books { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+  .book {
+    background: var(--card); border: 1px solid var(--rule-soft);
+    border-top: 2px solid var(--ink); border-radius: 2px; padding: 11px 13px;
+    transition: background .3s;
+  }
+  .book.flash { background: var(--bar); }
+  .book-label {
+    font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 3px;
+  }
+  .book-value {
+    font-family: "Zilla Slab", Georgia, serif; font-size: 27px; font-weight: 600;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+  }
+
+  .scenario-head { margin-bottom: 16px; }
+  .scenario-head h1 {
+    font-family: "Zilla Slab", Georgia, serif; font-size: 22px; font-weight: 600;
+    margin: 0 0 4px; text-wrap: balance;
+  }
+  .scenario-head p { margin: 0; color: var(--ink-soft); font-size: 14px; max-width: 62ch; }
+
+  /* ── the tape: greenbar fanfold ──────────────────────────── */
+  .tape-frame {
+    position: relative; border: 1px solid var(--rule); border-radius: 2px;
+    background: var(--card); box-shadow: 0 1px 3px var(--shadow); overflow: hidden;
+  }
+  /* sprocket margins, like tractor-feed paper */
+  .tape-frame::before, .tape-frame::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 15px; z-index: 2;
+    background:
+      repeating-linear-gradient(to bottom, transparent 0 9px, var(--rule-soft) 9px 15px),
+      var(--bar);
+    border-right: 1px solid var(--rule-soft);
+  }
+  .tape-frame::before { left: 0; }
+  .tape-frame::after { right: 0; border-right: none; border-left: 1px solid var(--rule-soft); }
+
+  #tape {
+    height: 380px; overflow-y: auto; overflow-x: auto;
+    margin: 0 15px; padding: 6px 0;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12.5px; line-height: 1.5;
+  }
+  .line {
+    display: flex; gap: 9px; align-items: baseline;
+    padding: 3px 14px; white-space: nowrap;
+  }
+  /* the alternating green bands */
+  .line:nth-child(odd) { background: var(--bar); }
+  .t-seq { color: var(--ink-faint); width: 12px; flex: none; }
+  .t-state {
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    min-width: 88px; flex: none;
+  }
+  .t-call { color: var(--lit); min-width: 88px; flex: none; }
+  .t-code { color: var(--bad); font-weight: 700; min-width: 88px; flex: none; }
+  .t-detail, .t-body { color: var(--ink-soft); }
+  .line.served .t-body { color: var(--ok); font-weight: 500; white-space: pre-wrap; }
+  .line.note .t-body { font-style: italic; }
+  .line.note.alarm .t-body { color: var(--bad); font-style: normal; font-weight: 700; }
+
+  .s-quoted, .s-verifying { color: var(--ink-soft); }
+  .s-settling { color: var(--warn); }
+  .s-settled, .s-producing { color: var(--lit); }
+  .s-delivered { color: var(--ok); }
+  .s-void { color: var(--ink-faint); }
+  .s-refunding, .s-refunded { color: var(--warn); }
+  .s-stuck { color: var(--bad); }
+
+  /* ── pipeline ────────────────────────────────────────────── */
+  .node {
+    display: flex; align-items: center; gap: 9px;
+    font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+    color: var(--ink-faint); padding: 3px 0; transition: color .18s;
+  }
+  .node .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    border: 1px solid var(--rule); background: transparent; transition: all .18s;
+  }
+  .node.terminal .dot { border-radius: 1px; }
+  .node.on { color: var(--ink); font-weight: 700; }
+  .node.on .dot { background: var(--seal); border-color: var(--seal); box-shadow: 0 0 0 3px color-mix(in srgb, var(--seal) 22%, transparent); }
+
+  /* ── verdict stamp ───────────────────────────────────────── */
+  .stamp {
+    display: inline-block; font-family: "Zilla Slab", Georgia, serif;
+    font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em;
+    padding: 7px 14px; border: 2.5px solid currentColor; border-radius: 3px;
+    transform: rotate(-2.2deg); opacity: 0.92;
+  }
+  .stamp.holds  { color: var(--ok); }
+  .stamp.broken { color: var(--bad); }
+  .stamp.flagged { color: var(--warn); }
+  .stamp.pending { color: var(--ink-faint); border-style: dashed; }
+  #verdict-note { color: var(--ink-soft); font-size: 13.5px; margin: 12px 0 0; max-width: 40ch; }
+
+  /* ── receipts ────────────────────────────────────────────── */
+  .receipt {
+    border: 1px solid var(--rule-soft); border-left: 3px solid var(--rule);
+    background: var(--card); border-radius: 2px; padding: 7px 10px; margin-bottom: 6px;
+  }
+  .r-delivered { border-left-color: var(--ok); }
+  .r-void      { border-left-color: var(--ink-faint); }
+  .r-refunded  { border-left-color: var(--warn); }
+  .r-stuck     { border-left-color: var(--bad); }
+  .r-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .r-outcome {
+    font-family: "JetBrains Mono", monospace; font-size: 10.5px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .r-amount { font-family: "JetBrains Mono", monospace; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .r-hash { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--ink-faint); margin-top: 2px; }
+  .chain-ok, .chain-bad {
+    font-family: "JetBrains Mono", monospace; font-size: 10.5px; margin: 8px 0 0;
+  }
+  .chain-ok { color: var(--ok); }
+  .chain-bad { color: var(--bad); }
+  .muted { color: var(--ink-faint); font-size: 13px; margin: 0; }
+
+  .stack { display: flex; flex-direction: column; gap: 22px; }
+
+  footer.note {
+    margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--rule-soft);
+    color: var(--ink-faint); font-size: 12.5px; max-width: 76ch;
+  }
+  footer.note code {
+    font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+    background: var(--bar); padding: 1px 4px; border-radius: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div class="mark">Latch</div>
+    <div class="tagline">Settlement console — a paid-HTTP gate, running live in this page.</div>
+    <div class="invariant">charged <b>&hArr;</b> delivered</div>
+  </header>
+  <div class="rule-under"></div>
+
+  <div class="console">
+    <aside>
+      <h2 class="panel">Scenarios</h2>
+      <div id="scenarios"></div>
+    </aside>
+
+    <main>
+      <div class="books">
+        <div class="book">
+          <span class="book-label">Buyer &middot; agt_scout7</span>
+          <span class="book-value" id="buyer">$1.00</span>
+        </div>
+        <div class="book">
+          <span class="book-label">Seller &middot; 0xtollgate</span>
+          <span class="book-value" id="seller">$0.00</span>
+        </div>
+      </div>
+
+      <div class="scenario-head">
+        <h1 id="scenario-title">&nbsp;</h1>
+        <p id="blurb">&nbsp;</p>
+      </div>
+
+      <div class="tape-frame">
+        <div id="tape"></div>
+      </div>
+    </main>
+
+    <aside class="stack">
+      <section>
+        <h2 class="panel">Invoice state</h2>
+        <div id="pipeline"></div>
+      </section>
+
+      <section>
+        <h2 class="panel">Verdict</h2>
+        <span class="stamp pending" id="verdict">idle</span>
+        <p id="verdict-note"></p>
+      </section>
+
+      <section>
+        <h2 class="panel">Receipt chain</h2>
+        <div id="chain"><p class="muted">No receipts yet.</p></div>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="note">
+    This page runs the actual library — <code>src/gate.ts</code>, <code>src/states.ts</code> and the
+    reference journal — bundled straight into the document. The tape prints real journal entries, the
+    books read real facilitator balances, and the verdict applies the same rule the test suite asserts
+    (<code>assertMoneyIsSound</code>). The payment network and the model are simulated so that failures
+    which would be expensive or impossible to stage for real can be triggered on demand.
+  </footer>
+</div>
+
+<script type="module">
+// src/errors.ts
+var LatchError = class extends Error {
+  code;
+  retryable;
+  detail;
+  constructor(code, message, options = {}) {
+    super(message);
+    this.name = "LatchError";
+    this.code = code;
+    this.retryable = options.retryable ?? false;
+    this.detail = options.detail ?? {};
+  }
+};
+function isLatchError(value) {
+  return value instanceof LatchError;
+}
+var JournalConflictError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "JournalConflictError";
+  }
+};
+
+// src/crypto.ts
+var K = new Uint32Array([
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+]);
+var encoder = new TextEncoder();
+function rotr(x, n) {
+  return x >>> n | x << 32 - n;
+}
+function sha256(input) {
+  const h = new Uint32Array([
+    1779033703,
+    3144134277,
+    1013904242,
+    2773480762,
+    1359893119,
+    2600822924,
+    528734635,
+    1541459225
+  ]);
+  const bitLen = input.length * 8;
+  const withPad = new Uint8Array(((input.length + 8 >> 6) + 1) * 64);
+  withPad.set(input);
+  withPad[input.length] = 128;
+  const view = new DataView(withPad.buffer);
+  view.setUint32(withPad.length - 4, bitLen >>> 0, false);
+  view.setUint32(withPad.length - 8, Math.floor(bitLen / 4294967296), false);
+  const w = new Uint32Array(64);
+  for (let offset = 0; offset < withPad.length; offset += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const a2 = w[i - 15];
+      const b2 = w[i - 2];
+      const s0 = rotr(a2, 7) ^ rotr(a2, 18) ^ a2 >>> 3;
+      const s1 = rotr(b2, 17) ^ rotr(b2, 19) ^ b2 >>> 10;
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+    }
+    let [a, b, c, d, e, f, g, hh] = [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]];
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = e & f ^ ~e & g;
+      const t1 = hh + S1 + ch + K[i] + w[i] >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = a & b ^ a & c ^ b & c;
+      const t2 = S0 + maj >>> 0;
+      hh = g;
+      g = f;
+      f = e;
+      e = d + t1 >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = t1 + t2 >>> 0;
+    }
+    h[0] = h[0] + a >>> 0;
+    h[1] = h[1] + b >>> 0;
+    h[2] = h[2] + c >>> 0;
+    h[3] = h[3] + d >>> 0;
+    h[4] = h[4] + e >>> 0;
+    h[5] = h[5] + f >>> 0;
+    h[6] = h[6] + g >>> 0;
+    h[7] = h[7] + hh >>> 0;
+  }
+  const out = new Uint8Array(32);
+  const outView = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) outView.setUint32(i * 4, h[i], false);
+  return out;
+}
+function toHex(bytes) {
+  let s = "";
+  for (const b of bytes) s += b.toString(16).padStart(2, "0");
+  return s;
+}
+function sha256Hex(input) {
+  return toHex(sha256(encoder.encode(input)));
+}
+function hmacSha256Hex(secret, message) {
+  const blockSize = 64;
+  const raw = encoder.encode(secret);
+  const key = raw.length > blockSize ? sha256(raw) : raw;
+  const padded = new Uint8Array(blockSize);
+  padded.set(key);
+  const inner = new Uint8Array(blockSize);
+  const outer = new Uint8Array(blockSize);
+  for (let i = 0; i < blockSize; i++) {
+    inner[i] = padded[i] ^ 54;
+    outer[i] = padded[i] ^ 92;
+  }
+  const msg = encoder.encode(message);
+  const innerInput = new Uint8Array(blockSize + msg.length);
+  innerInput.set(inner);
+  innerInput.set(msg, blockSize);
+  const innerHash = sha256(innerInput);
+  const outerInput = new Uint8Array(blockSize + 32);
+  outerInput.set(outer);
+  outerInput.set(innerHash, blockSize);
+  return toHex(sha256(outerInput));
+}
+function timingSafeEqualHex(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+function csprng() {
+  const c = globalThis.crypto;
+  if (!c || typeof c.getRandomValues !== "function") {
+    throw new Error("No cryptographic random source available");
+  }
+  return c;
+}
+function randomHex(byteLength) {
+  const bytes = new Uint8Array(byteLength);
+  csprng().getRandomValues(bytes);
+  return toHex(bytes);
+}
+function randomUuid() {
+  const c = csprng();
+  if (typeof c.randomUUID === "function") return c.randomUUID();
+  return `${randomHex(4)}-${randomHex(2)}-${randomHex(2)}-${randomHex(2)}-${randomHex(6)}`;
+}
+
+// src/ids.ts
+function newId(prefix) {
+  return `${prefix}_${randomHex(12)}`;
+}
+function newInvoiceId() {
+  return newId("inv");
+}
+function newNonce() {
+  return randomUuid();
+}
+function deriveIdempotencyKey(parts) {
+  const canonical = [
+    parts.invoiceId,
+    parts.payer,
+    String(parts.amountMicros),
+    parts.requestHash
+  ].join("\0");
+  return `idem_${sha256Hex(canonical).slice(0, 32)}`;
+}
+function hashRequest(value) {
+  return sha256Hex(canonicalJson(value));
+}
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value).filter(([, v]) => v !== void 0).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+}
+
+// src/money.ts
+var MICROS_PER_UNIT = 1e6;
+var MAX_MICROS = 2 ** 53 - 1;
+function isMicros(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_MICROS;
+}
+function assertMicros(value) {
+  if (!isMicros(value)) {
+    throw new RangeError(`Invalid micro amount: ${String(value)}`);
+  }
+}
+function addMicros(a, b) {
+  assertMicros(a);
+  assertMicros(b);
+  const sum = a + b;
+  if (sum > MAX_MICROS) throw new RangeError("Micro addition overflow");
+  return sum;
+}
+function subMicros(a, b) {
+  assertMicros(a);
+  assertMicros(b);
+  if (b > a) throw new RangeError("Micro subtraction would go negative");
+  return a - b;
+}
+function formatUsd(micros) {
+  assertMicros(micros);
+  const whole = Math.floor(micros / MICROS_PER_UNIT);
+  const frac = micros % MICROS_PER_UNIT;
+  if (frac === 0) return `$${whole}.00`;
+  const trimmed = String(frac).padStart(6, "0").replace(/0+$/, "");
+  return `$${whole}.${trimmed.length < 2 ? trimmed.padEnd(2, "0") : trimmed}`;
+}
+
+// src/states.ts
+var STATES = [
+  "quoted",
+  "verifying",
+  "settling",
+  "settled",
+  "producing",
+  "delivered",
+  "void",
+  "refunding",
+  "refunded",
+  "stuck"
+];
+var TERMINAL_STATES = ["delivered", "void", "refunded", "stuck"];
+var IN_FLIGHT_STATES = [
+  "verifying",
+  "settling",
+  "settled",
+  "producing",
+  "refunding"
+];
+var LEGAL = {
+  // Payment proof arrived, or the quote timed out.
+  quoted: ["verifying", "void"],
+  // Facilitator says the proof is good, or it isn't.
+  verifying: ["settling", "void"],
+  // Settlement submitted. It lands, or it doesn't and nothing moved.
+  settling: ["settled", "void"],
+  // Money is durably ours. Only now may we spend compute.
+  settled: ["producing"],
+  // The good is being made. It works, or we owe a refund.
+  producing: ["delivered", "refunding"],
+  // Refund is the compensating action for a settle we cannot honour.
+  refunding: ["refunded", "stuck"],
+  delivered: [],
+  void: [],
+  refunded: [],
+  stuck: []
+};
+function isTerminal(state) {
+  return TERMINAL_STATES.includes(state);
+}
+function isInFlight(state) {
+  return IN_FLIGHT_STATES.includes(state);
+}
+function canTransition(from, to) {
+  return (LEGAL[from] ?? []).includes(to);
+}
+function assertTransition(from, to) {
+  if (!canTransition(from, to)) {
+    throw new Error(`Illegal transition: ${from} -> ${to}`);
+  }
+}
+
+// src/receipt.ts
+function hmacSigner(secret) {
+  if (secret.length < 32) {
+    throw new Error("Receipt signing secret must be at least 32 characters");
+  }
+  return {
+    sign(payload) {
+      return hmacSha256Hex(secret, payload);
+    },
+    verify(payload, signature) {
+      return timingSafeEqualHex(hmacSha256Hex(secret, payload), signature);
+    }
+  };
+}
+var GENESIS = "0".repeat(64);
+function hashReceipt(receipt) {
+  return sha256Hex(canonicalJson(receipt));
+}
+function issueReceipt(receipt, signer) {
+  return { receipt, signature: signer.sign(canonicalJson(receipt)) };
+}
+function verifyReceipt(signed, signer) {
+  return signer.verify(canonicalJson(signed.receipt), signed.signature);
+}
+function auditChain(chain, signer) {
+  let prev = GENESIS;
+  for (let i = 0; i < chain.length; i++) {
+    const link = chain[i];
+    if (!link) return i;
+    if (link.receipt.prev !== prev) return i;
+    if (!verifyReceipt(link, signer)) return i;
+    prev = hashReceipt(link.receipt);
+  }
+  return -1;
+}
+
+// src/ports.ts
+var systemClock = { now: () => Date.now() };
+
+// src/gate.ts
+var Latch = class {
+  cfg;
+  d;
+  clock;
+  constructor(config, deps) {
+    this.cfg = {
+      payTo: config.payTo,
+      network: config.network ?? "base",
+      asset: config.asset ?? "USDC",
+      quoteTtlMs: config.quoteTtlMs ?? 12e4,
+      produceTimeoutMs: config.produceTimeoutMs ?? 12e3,
+      maxProduceAttempts: config.maxProduceAttempts ?? 2
+    };
+    this.d = deps;
+    this.clock = deps.clock ?? systemClock;
+  }
+  /** Open a priced invoice, bound to one payer and one exact request. */
+  async quote(input) {
+    if (!input.payer) throw new LatchError("bad_request", "Missing payer id");
+    assertMicros(input.amountMicros);
+    const quote = {
+      invoiceId: newInvoiceId(),
+      sku: input.sku,
+      amountMicros: input.amountMicros,
+      payTo: this.cfg.payTo,
+      network: this.cfg.network,
+      asset: this.cfg.asset,
+      payer: input.payer,
+      requestHash: hashRequest(input.request),
+      nonce: newNonce(),
+      expiresAt: this.clock.now() + this.cfg.quoteTtlMs
+    };
+    await this.d.journal.open(quote);
+    return {
+      quote,
+      payment: {
+        x402Version: 1,
+        error: "Payment required",
+        accepts: [
+          {
+            scheme: "exact",
+            network: quote.network,
+            asset: quote.asset,
+            maxAmountRequired: String(quote.amountMicros),
+            resource: input.resource ?? "/",
+            payTo: quote.payTo,
+            mimeType: "application/json",
+            extra: {
+              invoiceId: quote.invoiceId,
+              sku: quote.sku,
+              nonce: quote.nonce,
+              expiresAt: quote.expiresAt,
+              requestHash: quote.requestHash
+            }
+          }
+        ]
+      }
+    };
+  }
+  /**
+   * Pay and collect. Safe to call twice with the same arguments: the second
+   * call returns the first call's result and does not charge again.
+   */
+  async redeem(input) {
+    const snap = await this.d.journal.get(input.invoiceId);
+    if (!snap) throw new LatchError("unknown_invoice", "Unknown invoice");
+    const { quote } = snap;
+    if (quote.payer !== input.payer) {
+      throw new LatchError("payer_mismatch", "Invoice belongs to a different payer");
+    }
+    if (hashRequest(input.request) !== quote.requestHash) {
+      throw new LatchError("bad_request", "Request does not match the quoted request", {
+        detail: { expected: quote.requestHash }
+      });
+    }
+    const idempotencyKey = this.keyFor(quote);
+    if (isTerminal(snap.state)) {
+      await this.backfillReceipt(quote, snap.state, idempotencyKey);
+      return this.replay(snap.state, idempotencyKey, quote);
+    }
+    if (snap.state !== "quoted") {
+      await this.recover(input.invoiceId);
+      const after = await this.d.journal.get(input.invoiceId);
+      if (after && isTerminal(after.state)) {
+        return this.replay(after.state, idempotencyKey, quote);
+      }
+      throw new LatchError("concurrent_attempt", "Invoice is already being processed", {
+        retryable: true
+      });
+    }
+    if (this.clock.now() > quote.expiresAt) {
+      await this.advance(snap.seq, quote, "void", { reason: "quote_expired" });
+      await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+      throw new LatchError("invoice_expired", "Quote expired; request a new one");
+    }
+    await this.d.journal.putResult(`req_${idempotencyKey}`, input.request);
+    let seq = await this.advance(snap.seq, quote, "verifying", {});
+    const verdict2 = await this.d.facilitator.verify(input.proof, quote);
+    if (!verdict2.ok) {
+      await this.advance(seq, quote, "void", { reason: verdict2.reason });
+      await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+      throw new LatchError("proof_invalid", `Payment proof rejected: ${verdict2.reason}`);
+    }
+    if (verdict2.amountMicros !== quote.amountMicros) {
+      await this.advance(seq, quote, "void", {
+        reason: "amount_mismatch",
+        offered: verdict2.amountMicros,
+        required: quote.amountMicros
+      });
+      await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+      throw new LatchError("amount_mismatch", "Payment does not cover the quoted amount", {
+        detail: { offered: verdict2.amountMicros, required: quote.amountMicros }
+      });
+    }
+    const fresh = await this.d.journal.consumeNonce(verdict2.nonce, quote.invoiceId);
+    if (!fresh) {
+      await this.advance(seq, quote, "void", { reason: "nonce_replayed", nonce: verdict2.nonce });
+      await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+      throw new LatchError("proof_replayed", "This payment proof has already been used");
+    }
+    seq = await this.advance(seq, quote, "settling", { idempotencyKey });
+    let outcome;
+    let failure = "settlement_error";
+    try {
+      outcome = await this.d.facilitator.settle({ idempotencyKey, quote, proof: input.proof });
+      if (!outcome.ok) failure = outcome.reason;
+    } catch (err) {
+      outcome = void 0;
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    let reference;
+    if (outcome && outcome.ok) {
+      reference = outcome.reference;
+    } else {
+      const status = await this.confirmSettlement(idempotencyKey, seq, quote, failure);
+      if (status === void 0) {
+        throw new LatchError("settlement_failed", `Settlement failed: ${failure}`);
+      }
+      reference = status;
+    }
+    seq = await this.advance(seq, quote, "settled", { reference, amountMicros: quote.amountMicros });
+    return this.deliver(seq, quote, input.request, idempotencyKey, reference);
+  }
+  /**
+   * Finish an invoice that was interrupted. Idempotent, and safe to run from a
+   * background sweep. This is what turns a crash from a loss into a delay.
+   */
+  async recover(invoiceId) {
+    const snap = await this.d.journal.get(invoiceId);
+    if (!snap) throw new LatchError("unknown_invoice", "Unknown invoice");
+    const { quote, state } = snap;
+    const idempotencyKey = this.keyFor(quote);
+    if (isTerminal(state)) {
+      await this.backfillReceipt(quote, state, idempotencyKey);
+      return state;
+    }
+    switch (state) {
+      case "quoted": {
+        if (this.clock.now() <= quote.expiresAt) return state;
+        await this.advance(snap.seq, quote, "void", { reason: "quote_expired" });
+        await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+        return "void";
+      }
+      case "verifying": {
+        await this.advance(snap.seq, quote, "void", { reason: "recovered_before_settlement" });
+        await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+        return "void";
+      }
+      case "settling": {
+        const status = await this.d.facilitator.statusOf(idempotencyKey);
+        if (status.state === "pending") return state;
+        if (status.state === "unknown") {
+          await this.advance(snap.seq, quote, "void", { reason: "settlement_never_landed" });
+          await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+          return "void";
+        }
+        const seq = await this.advance(snap.seq, quote, "settled", {
+          reference: status.reference,
+          amountMicros: status.amountMicros,
+          recovered: true
+        });
+        return this.runProducer(seq, quote, idempotencyKey, status.reference);
+      }
+      case "settled":
+      case "producing":
+        return this.runProducer(snap.seq, quote, idempotencyKey, this.referenceFrom(snap.entries));
+      case "refunding":
+        return this.finishRefund(snap.seq, quote, idempotencyKey, this.referenceFrom(snap.entries));
+      default:
+        return state;
+    }
+  }
+  /** Sweep every invoice left in-flight longer than `staleMs`. Run this on a timer. */
+  async sweep(staleMs = 3e4, limit = 100) {
+    const ids = await this.d.journal.findInFlight(this.clock.now() - staleMs, limit);
+    const out = [];
+    for (const id of ids) {
+      try {
+        out.push({ invoiceId: id, state: await this.recover(id) });
+      } catch {
+      }
+    }
+    return out;
+  }
+  async chain() {
+    return this.d.journal.readChain();
+  }
+  // ---------------------------------------------------------------- internals
+  keyFor(quote) {
+    return deriveIdempotencyKey({
+      invoiceId: quote.invoiceId,
+      payer: quote.payer,
+      amountMicros: quote.amountMicros,
+      requestHash: quote.requestHash
+    });
+  }
+  async advance(fromSeq, quote, to, evidence) {
+    const snap = await this.d.journal.get(quote.invoiceId);
+    if (!snap) throw new LatchError("unknown_invoice", "Invoice vanished mid-flight");
+    assertTransition(snap.state, to);
+    try {
+      const entry = await this.d.journal.append(
+        { invoiceId: quote.invoiceId, state: to, at: this.clock.now(), evidence },
+        fromSeq
+      );
+      return entry.seq;
+    } catch (err) {
+      if (err instanceof JournalConflictError) {
+        throw new LatchError("concurrent_attempt", "Another worker is advancing this invoice", {
+          retryable: true
+        });
+      }
+      throw err;
+    }
+  }
+  /**
+   * Ask the payment network what actually happened after an unclear settle.
+   *
+   * Returns the settlement reference if the money moved, or undefined if it
+   * provably did not. Anything genuinely undecided leaves the invoice in
+   * `settling` and throws retryable, so the sweep resolves it later — an
+   * invoice parked in-flight is recoverable, a wrongly-voided one is not.
+   */
+  async confirmSettlement(idempotencyKey, seq, quote, failure) {
+    let status;
+    try {
+      status = await this.d.facilitator.statusOf(idempotencyKey);
+    } catch {
+      throw new LatchError("settlement_failed", "Settlement status unknown; will be resolved", {
+        retryable: true,
+        detail: { invoiceId: quote.invoiceId }
+      });
+    }
+    if (status.state === "settled") return status.reference;
+    if (status.state === "pending") {
+      throw new LatchError("settlement_failed", "Settlement pending; retry shortly", {
+        retryable: true,
+        detail: { invoiceId: quote.invoiceId }
+      });
+    }
+    await this.advance(seq, quote, "void", { reason: failure, confirmed: true });
+    await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+    return void 0;
+  }
+  referenceFrom(entries) {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e && e.state === "settled" && typeof e.evidence.reference === "string") {
+        return e.evidence.reference;
+      }
+    }
+    return "";
+  }
+  async deliver(seq, quote, request, idempotencyKey, reference) {
+    const state = await this.runProducer(seq, quote, idempotencyKey, reference, request);
+    if (state === "delivered") {
+      const cached = await this.d.journal.getResult(idempotencyKey);
+      if (!cached) throw new LatchError("needs_operator", "Delivered invoice has no stored result");
+      return {
+        result: cached.payload,
+        receipt: await this.receiptFor(quote.invoiceId),
+        replayed: false
+      };
+    }
+    if (state === "refunded") {
+      throw new LatchError("producer_failed", "Could not deliver; your payment was refunded", {
+        detail: { invoiceId: quote.invoiceId }
+      });
+    }
+    throw new LatchError("needs_operator", "Delivery failed and the refund did not go through", {
+      detail: { invoiceId: quote.invoiceId }
+    });
+  }
+  async runProducer(seq, quote, idempotencyKey, reference, request) {
+    const snap = await this.d.journal.get(quote.invoiceId);
+    if (!snap) throw new LatchError("unknown_invoice", "Invoice vanished mid-flight");
+    const attempts = snap.entries.filter((e) => e.state === "producing").length;
+    if (attempts >= this.cfg.maxProduceAttempts) {
+      const from = snap.state === "producing" ? snap.seq : seq;
+      const next = await this.advance(from, quote, "refunding", { reason: "max_produce_attempts" });
+      return this.finishRefund(next, quote, idempotencyKey, reference);
+    }
+    const currentSeq = snap.state === "producing" ? snap.seq : await this.advance(seq, quote, "producing", { attempt: attempts + 1 });
+    const stored = await this.d.journal.getResult(`req_${idempotencyKey}`);
+    const payload = request ?? stored?.payload;
+    if (payload === void 0) {
+      const next = await this.advance(currentSeq, quote, "refunding", {
+        reason: "request_not_replayable"
+      });
+      return this.finishRefund(next, quote, idempotencyKey, reference);
+    }
+    const controller = new AbortController();
+    const deadline = this.clock.now() + this.cfg.produceTimeoutMs;
+    const timer = setTimeout(() => controller.abort(), this.cfg.produceTimeoutMs);
+    let result;
+    try {
+      result = await this.d.producer.produce(payload, {
+        invoiceId: quote.invoiceId,
+        idempotencyKey,
+        deadline,
+        signal: controller.signal,
+        budgetMicros: quote.amountMicros
+      });
+    } catch (err) {
+      const next = await this.advance(currentSeq, quote, "refunding", {
+        reason: controller.signal.aborted ? "producer_timeout" : "producer_failed",
+        error: err instanceof Error ? err.message : String(err)
+      });
+      return this.finishRefund(next, quote, idempotencyKey, reference);
+    } finally {
+      clearTimeout(timer);
+    }
+    await this.d.journal.putResult(idempotencyKey, result);
+    await this.advance(currentSeq, quote, "delivered", {
+      resultHash: hashRequest(result),
+      reference
+    });
+    await this.writeReceipt(quote, "delivered", {
+      chargedMicros: quote.amountMicros,
+      resultHash: hashRequest(result),
+      settlementRef: reference
+    });
+    return "delivered";
+  }
+  async finishRefund(seq, quote, idempotencyKey, reference) {
+    const refund = await this.d.facilitator.refund({
+      idempotencyKey: `refund_${idempotencyKey}`,
+      quote,
+      reference
+    });
+    if (refund.ok) {
+      await this.advance(seq, quote, "refunded", { refundRef: refund.reference });
+      await this.writeReceipt(quote, "refunded", {
+        chargedMicros: 0,
+        settlementRef: reference,
+        refundRef: refund.reference
+      });
+      return "refunded";
+    }
+    await this.advance(seq, quote, "stuck", { reason: refund.reason, settlementRef: reference });
+    await this.writeReceipt(quote, "stuck", {
+      chargedMicros: quote.amountMicros,
+      settlementRef: reference
+    });
+    return "stuck";
+  }
+  async writeReceipt(quote, outcome, fields) {
+    return this.d.journal.appendReceipt(
+      (prev) => issueReceipt(
+        {
+          version: 1,
+          invoiceId: quote.invoiceId,
+          outcome,
+          payer: quote.payer,
+          payTo: quote.payTo,
+          chargedMicros: fields.chargedMicros,
+          asset: quote.asset,
+          network: quote.network,
+          requestHash: quote.requestHash,
+          resultHash: fields.resultHash ?? null,
+          settlementRef: fields.settlementRef ?? null,
+          refundRef: fields.refundRef ?? null,
+          issuedAt: this.clock.now(),
+          prev: prev || GENESIS
+        },
+        this.d.signer
+      )
+    );
+  }
+  /** Write the missing receipt for an invoice that reached a terminal state without one. */
+  async backfillReceipt(quote, state, idempotencyKey) {
+    const chain = await this.d.journal.readChain();
+    if (chain.some((link) => link.receipt.invoiceId === quote.invoiceId)) return;
+    const snap = await this.d.journal.get(quote.invoiceId);
+    const reference = snap ? this.referenceFrom(snap.entries) : "";
+    if (state === "delivered") {
+      const cached = await this.d.journal.getResult(idempotencyKey);
+      await this.writeReceipt(quote, "delivered", {
+        chargedMicros: quote.amountMicros,
+        resultHash: cached ? hashRequest(cached.payload) : void 0,
+        settlementRef: reference
+      });
+      return;
+    }
+    if (state === "refunded") {
+      await this.writeReceipt(quote, "refunded", { chargedMicros: 0, settlementRef: reference });
+      return;
+    }
+    if (state === "stuck") {
+      await this.writeReceipt(quote, "stuck", {
+        chargedMicros: quote.amountMicros,
+        settlementRef: reference
+      });
+      return;
+    }
+    await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+  }
+  async receiptFor(invoiceId) {
+    const chain = await this.d.journal.readChain();
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const link = chain[i];
+      if (link && link.receipt.invoiceId === invoiceId) return link;
+    }
+    throw new LatchError("needs_operator", "Receipt missing for a delivered invoice");
+  }
+  async replay(state, idempotencyKey, quote) {
+    if (state === "delivered") {
+      const cached = await this.d.journal.getResult(idempotencyKey);
+      if (!cached) throw new LatchError("needs_operator", "Delivered invoice has no stored result");
+      return {
+        result: cached.payload,
+        receipt: await this.receiptFor(quote.invoiceId),
+        replayed: true
+      };
+    }
+    if (state === "refunded") {
+      throw new LatchError("producer_failed", "This invoice was refunded; request a new quote");
+    }
+    if (state === "stuck") {
+      throw new LatchError("needs_operator", "This invoice needs operator review");
+    }
+    throw new LatchError("invoice_not_payable", "This invoice is closed");
+  }
+};
+
+// src/adapters/memory-journal.ts
+function memoryJournal() {
+  const invoices = /* @__PURE__ */ new Map();
+  const nonces = /* @__PURE__ */ new Map();
+  const results = /* @__PURE__ */ new Map();
+  const chain = [];
+  let head = "";
+  function snapshotOf(rec) {
+    const last = rec.entries[rec.entries.length - 1];
+    if (!last) throw new Error("Corrupt journal: invoice with no entries");
+    return { quote: rec.quote, state: last.state, seq: last.seq, entries: [...rec.entries] };
+  }
+  return {
+    async open(quote) {
+      if (invoices.has(quote.invoiceId)) throw new Error("Invoice already open");
+      invoices.set(quote.invoiceId, {
+        quote,
+        entries: [
+          {
+            invoiceId: quote.invoiceId,
+            seq: 0,
+            state: "quoted",
+            at: quote.expiresAt,
+            evidence: { amountMicros: quote.amountMicros, sku: quote.sku }
+          }
+        ]
+      });
+    },
+    async get(invoiceId) {
+      const rec = invoices.get(invoiceId);
+      return rec ? snapshotOf(rec) : void 0;
+    },
+    async append(entry, expectedSeq) {
+      const rec = invoices.get(entry.invoiceId);
+      if (!rec) throw new Error("Unknown invoice");
+      const last = rec.entries[rec.entries.length - 1];
+      if (!last) throw new Error("Corrupt journal");
+      if (last.seq !== expectedSeq) {
+        throw new JournalConflictError(
+          `Journal conflict: expected seq ${expectedSeq}, found ${last.seq}`
+        );
+      }
+      const written = { ...entry, seq: last.seq + 1 };
+      rec.entries.push(written);
+      return written;
+    },
+    async findInFlight(olderThan, limit) {
+      const out = [];
+      for (const [id, rec] of invoices) {
+        const last = rec.entries[rec.entries.length - 1];
+        if (!last) continue;
+        if (!isInFlight(last.state)) continue;
+        if (last.at > olderThan) continue;
+        out.push({ id, at: last.at });
+      }
+      out.sort((a, b) => a.at - b.at);
+      return out.slice(0, limit).map((r) => r.id);
+    },
+    async consumeNonce(nonce, invoiceId) {
+      if (nonces.has(nonce)) return false;
+      nonces.set(nonce, invoiceId);
+      return true;
+    },
+    async putResult(idempotencyKey, payload) {
+      results.set(idempotencyKey, payload);
+    },
+    async getResult(idempotencyKey) {
+      if (!results.has(idempotencyKey)) return void 0;
+      return { payload: results.get(idempotencyKey) };
+    },
+    async appendReceipt(build) {
+      const signed = build(head);
+      chain.push(signed);
+      head = hashReceipt(signed.receipt);
+      return signed;
+    },
+    async readChain() {
+      return [...chain];
+    },
+    snapshotAll() {
+      return [...invoices.values()].map(snapshotOf);
+    }
+  };
+}
+
+// src/adapters/ledger-facilitator.ts
+function parseProof(raw) {
+  try {
+    const p = JSON.parse(raw);
+    if (typeof p.invoiceId !== "string" || typeof p.payer !== "string" || typeof p.nonce !== "string" || typeof p.amountMicros !== "number" || !Number.isInteger(p.amountMicros)) {
+      return void 0;
+    }
+    return p;
+  } catch {
+    return void 0;
+  }
+}
+function makeProof(quote, overrides = {}) {
+  return JSON.stringify({
+    invoiceId: quote.invoiceId,
+    payer: quote.payer,
+    amountMicros: quote.amountMicros,
+    nonce: quote.nonce,
+    ...overrides
+  });
+}
+function ledgerFacilitator(initial = {}) {
+  const balances = new Map(Object.entries(initial));
+  const settlements = /* @__PURE__ */ new Map();
+  const refunds = /* @__PURE__ */ new Map();
+  const faults = {};
+  let counter = 0;
+  const get = (a) => balances.get(a) ?? 0;
+  const move = (from, to, micros) => {
+    balances.set(from, subMicros(get(from), micros));
+    balances.set(to, addMicros(get(to), micros));
+  };
+  return {
+    faults,
+    credit(account, micros) {
+      balances.set(account, addMicros(get(account), micros));
+    },
+    balanceOf: get,
+    totalSupply() {
+      let sum = 0;
+      for (const v of balances.values()) sum += v;
+      return sum;
+    },
+    settlementCount() {
+      return settlements.size;
+    },
+    finalizePending() {
+      let n = 0;
+      for (const s of settlements.values()) {
+        if (s.final) continue;
+        move(s.payer, s.payTo, s.amountMicros);
+        s.final = true;
+        n++;
+      }
+      return n;
+    },
+    async verify(proof, expected) {
+      if (faults.verifyThrows) throw new Error("facilitator unreachable");
+      const p = parseProof(proof);
+      if (!p) return { ok: false, reason: "malformed_proof" };
+      if (p.invoiceId !== expected.invoiceId) return { ok: false, reason: "invoice_mismatch" };
+      if (p.payer !== expected.payer) return { ok: false, reason: "payer_mismatch" };
+      if (p.nonce !== expected.nonce) return { ok: false, reason: "nonce_mismatch" };
+      return { ok: true, payer: p.payer, amountMicros: p.amountMicros, nonce: p.nonce };
+    },
+    async settle({ idempotencyKey, quote }) {
+      const existing = settlements.get(idempotencyKey);
+      if (existing) {
+        return { ok: true, reference: existing.reference, amountMicros: existing.amountMicros };
+      }
+      if (faults.settleThrows) throw new Error("settlement network error");
+      if (faults.settleFails) return { ok: false, reason: "declined", moved: false };
+      if (get(quote.payer) < quote.amountMicros) {
+        return { ok: false, reason: "insufficient_funds", moved: false };
+      }
+      const reference = `stl_${++counter}`;
+      if (faults.settlePending) {
+        settlements.set(idempotencyKey, {
+          reference,
+          amountMicros: quote.amountMicros,
+          final: false,
+          payer: quote.payer,
+          payTo: quote.payTo
+        });
+        throw new Error("settlement timed out awaiting finality");
+      }
+      move(quote.payer, quote.payTo, quote.amountMicros);
+      settlements.set(idempotencyKey, {
+        reference,
+        amountMicros: quote.amountMicros,
+        final: true,
+        payer: quote.payer,
+        payTo: quote.payTo
+      });
+      if (faults.settleReportsFailureButMoves) {
+        return { ok: false, reason: "timeout_after_broadcast", moved: false };
+      }
+      return { ok: true, reference, amountMicros: quote.amountMicros };
+    },
+    async statusOf(idempotencyKey) {
+      const s = settlements.get(idempotencyKey);
+      if (!s) return { state: "unknown" };
+      if (!s.final) return { state: "pending" };
+      return { state: "settled", reference: s.reference, amountMicros: s.amountMicros };
+    },
+    async refund({ idempotencyKey, quote }) {
+      const already = refunds.get(idempotencyKey);
+      if (already) return { ok: true, reference: already };
+      if (faults.refundFails) return { ok: false, reason: "refund_rail_down" };
+      if (get(quote.payTo) < quote.amountMicros) {
+        return { ok: false, reason: "operator_balance_too_low" };
+      }
+      move(quote.payTo, quote.payer, quote.amountMicros);
+      const reference = `rfd_${++counter}`;
+      refunds.set(idempotencyKey, reference);
+      return { ok: true, reference };
+    }
+  };
+}
+
+// web/app.ts
+var BUYER = "agt_scout7";
+var SELLER = "0xtollgate";
+var PRICE = 24e3;
+var START = 1e6;
+var SECRET = "console-secret-long-enough-to-be-accepted";
+function makeEnv(opts = {}) {
+  const journal = memoryJournal();
+  const facilitator = ledgerFacilitator({ [BUYER]: START });
+  const events = [];
+  const env = { produced: 0 };
+  const observed = {
+    ...journal,
+    async append(entry, expectedSeq) {
+      const written = await journal.append(entry, expectedSeq);
+      events.push({ kind: "journal", state: written.state, evidence: written.evidence });
+      return written;
+    }
+  };
+  const realSettle = facilitator.settle.bind(facilitator);
+  facilitator.settle = async (intent) => {
+    const out = await realSettle(intent).catch((err) => {
+      events.push({ kind: "call", label: "settle()", detail: "threw \u2014 outcome unknown" });
+      throw err;
+    });
+    events.push({
+      kind: "call",
+      label: "settle()",
+      detail: out.ok ? `ok, ${formatUsd(out.amountMicros)}` : `reported "${out.reason}"`
+    });
+    return out;
+  };
+  const realStatus = facilitator.statusOf.bind(facilitator);
+  facilitator.statusOf = async (key) => {
+    const out = await realStatus(key);
+    events.push({ kind: "call", label: "statusOf()", detail: `network says "${out.state}"` });
+    return out;
+  };
+  const realRefund = facilitator.refund.bind(facilitator);
+  facilitator.refund = async (intent) => {
+    const out = await realRefund(intent);
+    events.push({
+      kind: "call",
+      label: "refund()",
+      detail: out.ok ? "money returned" : `failed \u2014 ${out.reason}`
+    });
+    return out;
+  };
+  const build = (j) => new Latch(
+    { payTo: SELLER, produceTimeoutMs: 4e3, quoteTtlMs: 6e5 },
+    {
+      journal: j,
+      facilitator,
+      signer: hmacSigner(SECRET),
+      producer: {
+        async produce(req) {
+          env.produced++;
+          events.push({ kind: "call", label: "produce()", detail: "spending compute" });
+          if (opts.failProducer) throw new Error("model returned garbage");
+          return { answer: `Verdict: fade the open bounce. (re: "${req.prompt}")` };
+        }
+      }
+    }
+  );
+  env.journal = journal;
+  env.observed = observed;
+  env.facilitator = facilitator;
+  env.events = events;
+  env.gate = build(observed);
+  env.restart = (j) => build(j ?? observed);
+  env.snapBooks = () => events.push({
+    kind: "books",
+    buyer: facilitator.balanceOf(BUYER),
+    seller: facilitator.balanceOf(SELLER)
+  });
+  env.buy = async (prompt = "overnight risk in APAC") => {
+    const { quote } = await env.gate.quote({
+      payer: BUYER,
+      sku: "brief",
+      amountMicros: PRICE,
+      request: { prompt }
+    });
+    return { invoiceId: quote.invoiceId, proof: makeProof(quote), request: { prompt } };
+  };
+  return env;
+}
+function crashingJournal(inner, atAppend) {
+  let n = 0;
+  return {
+    ...inner,
+    async append(entry, expectedSeq) {
+      n++;
+      if (n === atAppend) throw new Error("PROCESS CRASHED");
+      return inner.append(entry, expectedSeq);
+    }
+  };
+}
+async function attempt(env, fn) {
+  try {
+    const out = await fn();
+    env.events.push({ kind: "result", text: out.result.answer });
+  } catch (err) {
+    if (isLatchError(err)) {
+      env.events.push({ kind: "error", code: err.code, message: err.message });
+    } else {
+      env.events.push({ kind: "error", code: "crash", message: String(err) });
+    }
+  }
+}
+var SCENARIOS = [
+  {
+    id: "happy",
+    group: "Normal",
+    title: "A paid call",
+    blurb: "An agent gets 402, pays, and is served. The baseline everything else is measured against.",
+    async run() {
+      const env = makeEnv();
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      env.events.push({ kind: "note", text: "402 returned. The agent signs and retries.", tone: "plain" });
+      await attempt(env, () => env.gate.redeem({ invoiceId, payer: BUYER, proof, request }));
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "twice",
+    group: "Normal",
+    title: "Paying twice over",
+    blurb: "The same request sent three times. A retry must return the first answer, not buy a second one.",
+    async run() {
+      const env = makeEnv();
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      const args = { invoiceId, payer: BUYER, proof, request };
+      await attempt(env, () => env.gate.redeem(args));
+      env.events.push({ kind: "note", text: "The caller times out and retries, twice.", tone: "plain" });
+      await attempt(env, () => env.gate.redeem(args));
+      await attempt(env, () => env.gate.redeem(args));
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "crash-settled",
+    group: "Interruption",
+    title: "Crash after the money moves",
+    blurb: "Settlement lands, then the process dies before recording it. The case that loses money for good in a naive gate.",
+    async run() {
+      const env = makeEnv();
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      const crashy = env.restart(crashingJournal(env.observed, 3));
+      await crashy.redeem({ invoiceId, payer: BUYER, proof, request }).catch(() => void 0);
+      env.events.push({ kind: "note", text: "PROCESS CRASHED. The buyer has paid and holds nothing.", tone: "alarm" });
+      env.snapBooks();
+      env.events.push({ kind: "note", text: "Restarting. Recovery asks the network what really happened.", tone: "plain" });
+      await env.restart().recover(invoiceId);
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "crash-early",
+    group: "Interruption",
+    title: "Crash before paying",
+    blurb: "The process dies mid-verification, before any money moves. Unwinding is free and always correct.",
+    async run() {
+      const env = makeEnv();
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      const crashy = env.restart(crashingJournal(env.observed, 2));
+      await crashy.redeem({ invoiceId, payer: BUYER, proof, request }).catch(() => void 0);
+      env.events.push({ kind: "note", text: "PROCESS CRASHED before settlement.", tone: "alarm" });
+      env.events.push({ kind: "note", text: "Restarting and recovering.", tone: "plain" });
+      await env.restart().recover(invoiceId);
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "divergence",
+    group: "Attack",
+    title: "Settlement divergence",
+    blurb: "The rail moves the money and reports failure. Believing the return value would record a charge as though it never happened.",
+    async run() {
+      const env = makeEnv();
+      env.facilitator.faults.settleReportsFailureButMoves = true;
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      await attempt(env, () => env.gate.redeem({ invoiceId, payer: BUYER, proof, request }));
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "free",
+    group: "Attack",
+    title: "Free shopping",
+    blurb: "A caller with an empty wallet. Compute must never be spent before the money is real.",
+    async run() {
+      const env = makeEnv();
+      env.facilitator.faults.settleFails = true;
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      await attempt(env, () => env.gate.redeem({ invoiceId, payer: BUYER, proof, request }));
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "replay",
+    group: "Attack",
+    title: "Replaying a used proof",
+    blurb: "A rail that hands back the same nonce every time. The gate must not depend on the rail being correct.",
+    async run() {
+      const env = makeEnv();
+      env.facilitator.verify = async (_p, expected) => ({
+        ok: true,
+        payer: expected.payer,
+        amountMicros: expected.amountMicros,
+        nonce: "reused-nonce"
+      });
+      env.snapBooks();
+      const first = await env.buy("first question");
+      await attempt(env, () => env.gate.redeem({ ...first, payer: BUYER }));
+      env.events.push({ kind: "note", text: "The same proof is presented against a fresh invoice.", tone: "plain" });
+      const second = await env.buy("second question");
+      await attempt(env, () => env.gate.redeem({ ...second, payer: BUYER }));
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "refund",
+    group: "Failure",
+    title: "Delivery fails",
+    blurb: "The money settled, then production broke. Every committed step needs a compensating one.",
+    async run() {
+      const env = makeEnv({ failProducer: true });
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      await attempt(env, () => env.gate.redeem({ invoiceId, payer: BUYER, proof, request }));
+      env.snapBooks();
+      return env;
+    }
+  },
+  {
+    id: "stuck",
+    group: "Failure",
+    title: "The refund fails too",
+    blurb: "Undeliverable and un-refundable. The gate holds the money visibly and pages a human rather than keeping it quietly.",
+    async run() {
+      const env = makeEnv({ failProducer: true });
+      env.facilitator.faults.refundFails = true;
+      env.snapBooks();
+      const { invoiceId, proof, request } = await env.buy();
+      await attempt(env, () => env.gate.redeem({ invoiceId, payer: BUYER, proof, request }));
+      env.snapBooks();
+      return env;
+    }
+  }
+];
+var $ = (sel) => {
+  const el = document.querySelector(sel);
+  if (!el) throw new Error(`missing ${sel}`);
+  return el;
+};
+var tape = $("#tape");
+var pipeline = $("#pipeline");
+var buyerCell = $("#buyer");
+var sellerCell = $("#seller");
+var verdict = $("#verdict");
+var verdictNote = $("#verdict-note");
+var chainEl = $("#chain");
+var blurbEl = $("#blurb");
+var scenarioTitle = $("#scenario-title");
+var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+var wait = (ms) => new Promise((r) => setTimeout(r, reduced ? 0 : ms));
+function buildPipeline() {
+  pipeline.innerHTML = "";
+  for (const s of STATES) {
+    const row = document.createElement("div");
+    row.className = "node";
+    row.dataset.state = s;
+    row.innerHTML = `<span class="dot"></span><span class="name">${s}</span>`;
+    if (isTerminal(s)) row.classList.add("terminal");
+    pipeline.appendChild(row);
+  }
+}
+function litState(s) {
+  for (const node of pipeline.querySelectorAll(".node")) {
+    node.classList.toggle("on", node.dataset.state === s);
+  }
+}
+function money(el, micros) {
+  el.textContent = formatUsd(micros);
+}
+function printLine(html, cls = "") {
+  const div = document.createElement("div");
+  div.className = `line ${cls}`;
+  div.innerHTML = html;
+  tape.appendChild(div);
+  tape.scrollTop = tape.scrollHeight;
+  return div;
+}
+function esc(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+function evidenceOf(ev) {
+  const parts = [];
+  for (const [k, v] of Object.entries(ev)) {
+    if (k === "idempotencyKey" || k === "resultHash" || k === "requestHash") continue;
+    if (typeof v === "object") continue;
+    parts.push(`${k}=${String(v)}`);
+  }
+  return parts.slice(0, 2).join("  ");
+}
+async function renderChain(env) {
+  const chain = await env.gate.chain();
+  const ok = auditChain(chain, hmacSigner(SECRET)) === -1;
+  chainEl.innerHTML = "";
+  if (chain.length === 0) {
+    chainEl.innerHTML = `<p class="muted">No receipts yet.</p>`;
+    return;
+  }
+  for (const link of chain) {
+    const r = link.receipt;
+    const el = document.createElement("div");
+    el.className = `receipt r-${r.outcome}`;
+    el.innerHTML = `
+      <div class="r-head"><span class="r-outcome">${r.outcome}</span>
+      <span class="r-amount">${formatUsd(r.chargedMicros)}</span></div>
+      <div class="r-hash">prev ${esc(r.prev.slice(0, 16))}\u2026</div>`;
+    chainEl.appendChild(el);
+  }
+  const foot = document.createElement("p");
+  foot.className = ok ? "chain-ok" : "chain-bad";
+  foot.textContent = ok ? `Chain intact \u2014 ${chain.length} signed receipt(s)` : "Chain broken";
+  chainEl.appendChild(foot);
+}
+function renderVerdict(env, finalState) {
+  const buyer = env.facilitator.balanceOf(BUYER);
+  const seller = env.facilitator.balanceOf(SELLER);
+  const conserved = buyer + seller === START;
+  const charged = START - buyer;
+  let holds = conserved;
+  let note = "";
+  if (finalState === "delivered") {
+    holds = holds && charged === PRICE && env.produced > 0;
+    note = `Charged ${formatUsd(charged)} once, and the good was delivered.`;
+  } else if (finalState === "void" || finalState === "refunded") {
+    holds = holds && charged === 0;
+    note = finalState === "void" ? "Nothing moved. The caller was never charged." : "Charged, then refunded. The caller is whole again.";
+  } else if (finalState === "stuck") {
+    holds = holds && charged === PRICE;
+    note = "Money held and flagged for an operator. Never silently kept.";
+  } else {
+    note = "In flight \u2014 no terminal position yet.";
+  }
+  const tone = !holds ? "broken" : finalState === "stuck" ? "flagged" : "holds";
+  verdict.className = `stamp ${tone}`;
+  verdict.textContent = tone === "broken" ? "invariant broken" : tone === "flagged" ? "held for operator" : "invariant holds";
+  verdictNote.textContent = note;
+}
+async function play(env) {
+  tape.innerHTML = "";
+  litState(null);
+  printLine(`<span class="t-seq">\xB7</span><span class="t-body">opening invoice</span>`, "meta");
+  let last = null;
+  for (const ev of env.events) {
+    await wait(230);
+    if (ev.kind === "journal") {
+      last = ev.state;
+      litState(ev.state);
+      const detail = evidenceOf(ev.evidence);
+      printLine(
+        `<span class="t-seq">\u25B8</span><span class="t-state s-${ev.state}">${ev.state}</span><span class="t-detail">${esc(detail)}</span>`,
+        "journal"
+      );
+    } else if (ev.kind === "call") {
+      printLine(
+        `<span class="t-seq">\xB7</span><span class="t-call">${esc(ev.label)}</span><span class="t-detail">${esc(ev.detail)}</span>`,
+        "call"
+      );
+    } else if (ev.kind === "books") {
+      money(buyerCell, ev.buyer);
+      money(sellerCell, ev.seller);
+      buyerCell.parentElement?.classList.add("flash");
+      sellerCell.parentElement?.classList.add("flash");
+      setTimeout(() => {
+        buyerCell.parentElement?.classList.remove("flash");
+        sellerCell.parentElement?.classList.remove("flash");
+      }, 420);
+    } else if (ev.kind === "note") {
+      printLine(`<span class="t-seq">\xB7</span><span class="t-body">${esc(ev.text)}</span>`, `note ${ev.tone}`);
+    } else if (ev.kind === "result") {
+      printLine(`<span class="t-seq">\u2713</span><span class="t-body">${esc(ev.text)}</span>`, "served");
+    } else if (ev.kind === "error") {
+      printLine(
+        `<span class="t-seq">\u2715</span><span class="t-code">${esc(ev.code)}</span><span class="t-detail">${esc(ev.message)}</span>`,
+        "refused"
+      );
+    }
+  }
+  await renderChain(env);
+  renderVerdict(env, last);
+}
+var running = false;
+async function runScenario(s, button) {
+  if (running) return;
+  running = true;
+  for (const b of document.querySelectorAll(".scenario")) b.classList.remove("active");
+  button.classList.add("active");
+  scenarioTitle.textContent = s.title;
+  blurbEl.textContent = s.blurb;
+  verdict.className = "stamp pending";
+  verdict.textContent = "running";
+  verdictNote.textContent = "";
+  chainEl.innerHTML = "";
+  const env = await s.run();
+  await play(env);
+  running = false;
+}
+function buildControls() {
+  const host = $("#scenarios");
+  const groups = [...new Set(SCENARIOS.map((s) => s.group))];
+  for (const g of groups) {
+    const h = document.createElement("h3");
+    h.className = "group";
+    h.textContent = g;
+    host.appendChild(h);
+    for (const s of SCENARIOS.filter((x) => x.group === g)) {
+      const b = document.createElement("button");
+      b.className = "scenario";
+      b.type = "button";
+      b.innerHTML = `<span class="s-title">${s.title}</span>`;
+      b.addEventListener("click", () => void runScenario(s, b));
+      host.appendChild(b);
+    }
+  }
+}
+buildPipeline();
+buildControls();
+money(buyerCell, START);
+money(sellerCell, 0);
+void runScenario(SCENARIOS[0], document.querySelector(".scenario"));
+
+</script>

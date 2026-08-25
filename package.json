@@ -1,0 +1,35 @@
+{
+  "name": "latch402",
+  "version": "0.1.0",
+  "description": "A settlement-safe gate for paid HTTP: charge if and only if delivered.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "demo": "node demo.ts",
+    "build:console": "node scripts/build-console.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "x402",
+    "payments",
+    "agents",
+    "settlement",
+    "idempotency",
+    "http-402",
+    "crash-recovery"
+  ],
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md"
+  ]
+}
