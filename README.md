@@ -223,6 +223,14 @@ stars are.
   alert on them.
 - Request bodies are persisted so recovery can replay them. Encrypt them at
   rest and purge them at terminal state.
+- `quote()` is unbounded: every call opens an invoice row. Rate-limit it at
+  your edge, or a flood of unpaid quotes bloats the journal.
+- Ships as TypeScript source. Node 24 runs it directly (as do 22.18+ and any
+  bundler); older runtimes need a transpile step.
+- After a crash mid-settlement, recovery trusts `statusOf`. Its contract is
+  strict — "unknown" must mean no settlement can still land later. A
+  facilitator that cannot promise that must report "pending" instead; the
+  sweep will keep asking.
 - This handles the seller's side of the seam. The buyer's side — spend policy,
   budget ceilings, an audit trail of what your agents bought — is the mirror
   image and is not built here.
