@@ -13,6 +13,7 @@
     "build:console": "node scripts/build-console.mjs"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.7",
     "@types/node": "^22.20.1",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.3"

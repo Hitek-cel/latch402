@@ -98,7 +98,7 @@ every single time:
 
 ```bash
 npm run demo          # a narrated walkthrough in the terminal
-npm test              # 52 tests: crash injection, attacks, crypto vectors
+npm test              # 65 tests: crash injection, attacks, crypto vectors, Postgres
 npm run build:console # rebuild the visual console at web/latch-console.html
 ```
 
@@ -180,12 +180,33 @@ never came back.
 
 | Port | Notes |
 |---|---|
-| `Journal` | Durable, append-only, ordered per invoice. `append` needs compare-and-set on `seq`; `consumeNonce` needs a unique index. Translates directly to Postgres. |
+| `Journal` | Durable, append-only, ordered per invoice. **A Postgres adapter ships in the box** — see below. |
 | `Facilitator` | `settle`/`refund` **must** be idempotent on `idempotencyKey`, and `statusOf` **must** be honest. Without a status oracle, crash recovery is guesswork. |
 | `Producer` | Should respect `ctx.signal` and `ctx.budgetMicros`. Throwing is safe — it refunds. |
 
-`memoryJournal()` is the reference implementation and the contract the SQL one
-must meet. Its doc comment carries the SQL translation.
+### Postgres
+
+```ts
+import { postgresJournal, migrate } from "latch402";
+
+await migrate(sql);                    // run once at deploy, safe to re-run
+const journal = postgresJournal(sql);  // hand it to the gate
+```
+
+`sql` is a small two-method shape (`query` and `transaction`) that `pg`,
+`postgres.js` and PGlite each wrap in about ten lines — so the library keeps
+zero runtime dependencies and you keep your own driver.
+
+Three guarantees are enforced by the schema rather than by application code:
+history is append-only, `append` compare-and-sets on `seq` so two workers can
+never both advance one invoice, and a nonce is consumed in a single statement
+so a replay cannot slip between a check and a write.
+
+The adapter is tested against a real PostgreSQL 18 — the full gate, including
+crash recovery, runs over it in `test/postgres-journal.test.ts`.
+
+`memoryJournal()` remains the reference implementation for tests and local
+development.
 
 ## Using this?
 

@@ -1,7 +1,7 @@
 export { Latch } from "./gate.ts";
 export type { GateConfig, GateDeps, PaymentRequired, RedeemResult } from "./gate.ts";
 
-export { LatchError, httpStatusFor, isLatchError } from "./errors.ts";
+export { LatchError, JournalConflictError, httpStatusFor, isLatchError } from "./errors.ts";
 export type { FailureCode } from "./errors.ts";
 
 export {
@@ -54,5 +54,7 @@ export type {
 } from "./ports.ts";
 
 export { memoryJournal } from "./adapters/memory-journal.ts";
+export { postgresJournal, migrate, listStuck, SCHEMA } from "./adapters/postgres-journal.ts";
+export type { SqlClient, SqlExecutor } from "./adapters/postgres-journal.ts";
 export { ledgerFacilitator, makeProof, parseProof } from "./adapters/ledger-facilitator.ts";
 export type { LedgerFacilitator, LedgerFaults } from "./adapters/ledger-facilitator.ts";
