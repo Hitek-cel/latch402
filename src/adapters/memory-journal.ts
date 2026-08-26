@@ -89,7 +89,10 @@ export function memoryJournal(): Journal & { snapshotAll(): InvoiceSnapshot[] } 
     },
 
     async putResult(idempotencyKey, payload) {
-      results.set(idempotencyKey, payload);
+      // First write wins, exactly like the Postgres adapter's ON CONFLICT DO
+      // NOTHING. A recovered attempt must never overwrite a good that an
+      // earlier attempt already stored.
+      if (!results.has(idempotencyKey)) results.set(idempotencyKey, payload);
     },
 
     async getResult(idempotencyKey) {

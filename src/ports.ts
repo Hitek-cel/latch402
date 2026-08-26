@@ -52,7 +52,13 @@ export type Journal = {
   findInFlight(olderThan: number, limit: number): Promise<string[]>;
   /** Consume a nonce exactly once. Returns false if it was already used. */
   consumeNonce(nonce: string, invoiceId: string): Promise<boolean>;
-  /** Cache the delivered result so an idempotent retry returns it without recharging. */
+  /**
+   * Cache the delivered result so an idempotent retry returns it without
+   * recharging. MUST be first-write-wins: once a payload is stored under a
+   * key, later writes to that key are ignored. The gate hashes what is
+   * durably stored into the signed receipt, so an overwrite would let two
+   * attempts disagree about which good the caller was sold.
+   */
   putResult(idempotencyKey: string, payload: unknown): Promise<void>;
   getResult(idempotencyKey: string): Promise<{ payload: unknown } | undefined>;
   /**
@@ -79,6 +85,13 @@ export type SettleOutcome =
  * `statusOf` is the crash-recovery oracle: after an unclean shutdown mid-settle,
  * this is the only honest way to learn whether the money actually moved. The
  * reference SDKs that lack it are the ones that lose money.
+ *
+ * The contract on `statusOf` is strict: return "unknown" ONLY when no
+ * settlement under this key can still land later. Recovery voids the invoice
+ * on "unknown", and a settle request still in flight at that moment would
+ * move money for a closed sale. If a late landing cannot be ruled out (say,
+ * the proof's validity window has not expired), report "pending" and let the
+ * sweep ask again.
  */
 export type Facilitator = {
   verify(proof: string, expected: Quote): Promise<VerifyOutcome>;

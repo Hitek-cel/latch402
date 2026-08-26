@@ -67,10 +67,12 @@ test("every state is reachable and every terminal state is a dead end", () => {
 });
 
 test("the good is never produced from a state where money has not moved", () => {
-  // "producing" must only be reachable from "settled".
+  // "producing" is reachable from "settled", and from itself: recovery
+  // re-entering a crashed attempt. Both are post-charge states, so the
+  // invariant holds; no path reaches production before the money moved.
   const sources = STATES.filter((s) => canTransition(s, "producing"));
-  assert.deepEqual(sources, ["settled"]);
-  assert.equal(isCharged("settled"), true);
+  assert.deepEqual(sources, ["settled", "producing"]);
+  for (const s of sources) assert.equal(isCharged(s), true);
 });
 
 test("closing states carry the right money position", () => {

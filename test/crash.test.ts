@@ -133,3 +133,65 @@ test("a producer that fails on every recovery attempt ends in a refund, not a he
   assert.equal(await stateOf(w, quote.invoiceId), "refunded");
   assertMoneyIsSound(w, { state: "refunded", delivered: false });
 });
+
+test("a producer that crashes the process on every attempt is bounded, then refunded", async () => {
+  // The liveness case: not a producer that throws (that refunds immediately),
+  // but one that takes the whole process down mid-produce, leaving the journal
+  // in `producing`. Each recovery must burn an attempt; the cap must
+  // eventually refund rather than retry forever while holding the money.
+  const w = makeWorld({ maxProduceAttempts: 2 });
+  const { quote, proof } = await w.buy(PROMPT);
+
+  // Attempt 1: dies after producing is journaled, before delivered lands.
+  const crash1 = w.restart(crashingJournal(w.journal, { atAppend: 5, when: "before" }));
+  await crash1
+    .redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: PROMPT } })
+    .catch(() => undefined);
+  assert.equal(await stateOf(w, quote.invoiceId), "producing");
+
+  // Attempt 2 via recovery: re-enters producing (append 1), dies before
+  // delivered (append 2). The re-entry entry is what makes this attempt count.
+  const crash2 = w.restart(crashingJournal(w.journal, { atAppend: 2, when: "before" }));
+  await crash2.recover(quote.invoiceId).catch(() => undefined);
+  assert.equal(await stateOf(w, quote.invoiceId), "producing");
+
+  // Third recovery: both attempts are on the record, so the cap fires.
+  const final = await w.restart().recover(quote.invoiceId);
+
+  assert.equal(final, "refunded", "the attempt cap never fired across crashes");
+  assertMoneyIsSound(w, { state: "refunded", delivered: false });
+});
+
+test("the receipt attests the result the caller actually gets, across a re-produce", async () => {
+  // Crash after the good is durably stored but before `delivered` is
+  // journaled. Recovery re-runs the producer, which returns something
+  // different this time. First-write-wins means the caller gets the FIRST
+  // result — so the receipt's resultHash must commit to that one, not to the
+  // second attempt's output.
+  const w = makeWorld();
+  let call = 0;
+  w.producer.producer.produce = async () => ({ answer: `result-of-attempt-${++call}` });
+
+  const { quote, proof } = await w.buy(PROMPT);
+  const crashy = w.restart(crashingJournal(w.journal, { atAppend: 5, when: "before" }));
+  await crashy
+    .redeem({ invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: PROMPT } })
+    .catch(() => undefined);
+
+  assert.equal(await w.restart().recover(quote.invoiceId), "delivered");
+  assert.equal(call, 2, "recovery should have re-run the producer");
+
+  const gate = w.restart();
+  const out = await gate.redeem({
+    invoiceId: quote.invoiceId, payer: PAYER, proof, request: { prompt: PROMPT },
+  });
+  assert.equal(out.result.answer, "result-of-attempt-1", "first durable write must win");
+
+  const { hashRequest } = await import("../src/ids.ts");
+  assert.equal(
+    out.receipt.receipt.resultHash,
+    hashRequest(out.result),
+    "receipt attests a different result than the one delivered",
+  );
+  assertMoneyIsSound(w, { state: "delivered", delivered: true });
+});

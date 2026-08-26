@@ -95,7 +95,9 @@ export class Latch<TReq, TRes> {
       asset: config.asset ?? "USDC",
       quoteTtlMs: config.quoteTtlMs ?? 120_000,
       produceTimeoutMs: config.produceTimeoutMs ?? 12_000,
-      maxProduceAttempts: config.maxProduceAttempts ?? 2,
+      // At least one attempt: a cap of zero would try to refund straight from
+      // `settled`, which is not a legal transition.
+      maxProduceAttempts: Math.max(1, config.maxProduceAttempts ?? 2),
     };
     this.d = deps;
     this.clock = deps.clock ?? systemClock;
@@ -490,10 +492,14 @@ export class Latch<TReq, TRes> {
       return this.finishRefund(next, quote, idempotencyKey, reference);
     }
 
-    const currentSeq =
-      snap.state === "producing"
-        ? snap.seq
-        : await this.advance(seq, quote, "producing", { attempt: attempts + 1 });
+    // Every attempt appends an entry, including recovery re-entering an
+    // invoice that died mid-produce. That entry is what makes the attempt
+    // counter above real; reusing the old seq would retry forever.
+    const from = snap.state === "producing" ? snap.seq : seq;
+    const currentSeq = await this.advance(from, quote, "producing", {
+      attempt: attempts + 1,
+      ...(snap.state === "producing" ? { reentry: true } : {}),
+    });
 
     // On the live path we have the request in hand. On the recovery path we
     // replay it from the journal, because the caller is long gone.
@@ -531,15 +537,21 @@ export class Latch<TReq, TRes> {
     }
 
     // Store the good BEFORE marking delivered, so a crash between the two ends
-    // up replaying a cached result rather than losing it.
+    // up replaying a cached result rather than losing it. putResult is
+    // first-write-wins, so if a crashed earlier attempt already stored a
+    // result, THAT one is the good. Hash and deliver what is durably stored,
+    // never the local value, or the signed receipt could attest a result the
+    // caller does not receive.
     await this.d.journal.putResult(idempotencyKey, result);
+    const durable = await this.d.journal.getResult(idempotencyKey);
+    const good = (durable?.payload ?? result) as TRes;
     await this.advance(currentSeq, quote, "delivered", {
-      resultHash: hashRequest(result),
+      resultHash: hashRequest(good),
       reference,
     });
     await this.writeReceipt(quote, "delivered", {
       chargedMicros: quote.amountMicros,
-      resultHash: hashRequest(result),
+      resultHash: hashRequest(good),
       settlementRef: reference,
     });
     return "delivered";

@@ -631,8 +631,12 @@ var LEGAL = {
   settling: ["settled", "void"],
   // Money is durably ours. Only now may we spend compute.
   settled: ["producing"],
-  // The good is being made. It works, or we owe a refund.
-  producing: ["delivered", "refunding"],
+  // The good is being made. It works, we owe a refund, or a crash killed the
+  // attempt and recovery re-enters producing, appending a fresh entry so the
+  // attempt counter actually counts. Without the self-loop, a producer that
+  // crashes the process retries forever: the cap reads entries, and recovery
+  // could never write one.
+  producing: ["producing", "delivered", "refunding"],
   // Refund is the compensating action for a settle we cannot honour.
   refunding: ["refunded", "stuck"],
   delivered: [],
@@ -706,7 +710,9 @@ var Latch = class {
       asset: config.asset ?? "USDC",
       quoteTtlMs: config.quoteTtlMs ?? 12e4,
       produceTimeoutMs: config.produceTimeoutMs ?? 12e3,
-      maxProduceAttempts: config.maxProduceAttempts ?? 2
+      // At least one attempt: a cap of zero would try to refund straight from
+      // `settled`, which is not a legal transition.
+      maxProduceAttempts: Math.max(1, config.maxProduceAttempts ?? 2)
     };
     this.d = deps;
     this.clock = deps.clock ?? systemClock;
@@ -993,11 +999,15 @@ var Latch = class {
     if (!snap) throw new LatchError("unknown_invoice", "Invoice vanished mid-flight");
     const attempts = snap.entries.filter((e) => e.state === "producing").length;
     if (attempts >= this.cfg.maxProduceAttempts) {
-      const from = snap.state === "producing" ? snap.seq : seq;
-      const next = await this.advance(from, quote, "refunding", { reason: "max_produce_attempts" });
+      const from2 = snap.state === "producing" ? snap.seq : seq;
+      const next = await this.advance(from2, quote, "refunding", { reason: "max_produce_attempts" });
       return this.finishRefund(next, quote, idempotencyKey, reference);
     }
-    const currentSeq = snap.state === "producing" ? snap.seq : await this.advance(seq, quote, "producing", { attempt: attempts + 1 });
+    const from = snap.state === "producing" ? snap.seq : seq;
+    const currentSeq = await this.advance(from, quote, "producing", {
+      attempt: attempts + 1,
+      ...snap.state === "producing" ? { reentry: true } : {}
+    });
     const stored = await this.d.journal.getResult(`req_${idempotencyKey}`);
     const payload = request ?? stored?.payload;
     if (payload === void 0) {
@@ -1028,13 +1038,15 @@ var Latch = class {
       clearTimeout(timer);
     }
     await this.d.journal.putResult(idempotencyKey, result);
+    const durable = await this.d.journal.getResult(idempotencyKey);
+    const good = durable?.payload ?? result;
     await this.advance(currentSeq, quote, "delivered", {
-      resultHash: hashRequest(result),
+      resultHash: hashRequest(good),
       reference
     });
     await this.writeReceipt(quote, "delivered", {
       chargedMicros: quote.amountMicros,
-      resultHash: hashRequest(result),
+      resultHash: hashRequest(good),
       settlementRef: reference
     });
     return "delivered";
@@ -1204,7 +1216,7 @@ function memoryJournal() {
       return true;
     },
     async putResult(idempotencyKey, payload) {
-      results.set(idempotencyKey, payload);
+      if (!results.has(idempotencyKey)) results.set(idempotencyKey, payload);
     },
     async getResult(idempotencyKey) {
       if (!results.has(idempotencyKey)) return void 0;

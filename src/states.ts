@@ -58,8 +58,12 @@ const LEGAL: Record<State, readonly State[]> = {
   settling: ["settled", "void"],
   // Money is durably ours. Only now may we spend compute.
   settled: ["producing"],
-  // The good is being made. It works, or we owe a refund.
-  producing: ["delivered", "refunding"],
+  // The good is being made. It works, we owe a refund, or a crash killed the
+  // attempt and recovery re-enters producing, appending a fresh entry so the
+  // attempt counter actually counts. Without the self-loop, a producer that
+  // crashes the process retries forever: the cap reads entries, and recovery
+  // could never write one.
+  producing: ["producing", "delivered", "refunding"],
   // Refund is the compensating action for a settle we cannot honour.
   refunding: ["refunded", "stuck"],
   delivered: [],
