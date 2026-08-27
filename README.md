@@ -42,8 +42,10 @@ recoverable. That is the entire design.
 record of what was about to happen, which is what makes recovery possible at
 all.
 
-**2. Never produce before settlement is committed.** `settled` is the only state
-that can reach `producing`. This is checked by a test, not by convention.
+**2. Never produce before settlement is committed.** Only `settled` — or
+`producing` itself, when recovery resumes a crashed attempt — can reach
+`producing`. Both are post-charge states, so no path reaches compute before the
+money moved. This is checked by a test, not by convention.
 
 **3. Never trust a negative answer from the payment network.** A settle call can
 move the money and still report failure — a dropped response, a timeout after
@@ -74,6 +76,7 @@ stateDiagram-v2
     settling --> settled: money moved (confirmed)
     settling --> void: confirmed nothing moved
     settled --> producing: only path to compute
+    producing --> producing: recovery retries, bounded
     producing --> delivered: good produced
     producing --> refunding: failed or timed out
     refunding --> refunded: money returned
@@ -98,11 +101,11 @@ every single time:
 
 ```bash
 npm run demo          # a narrated walkthrough in the terminal
-npm test              # 65 tests: crash injection, attacks, crypto vectors, Postgres
+npm test              # 67 tests: crash injection, attacks, crypto vectors, Postgres
 npm run build:console # rebuild the visual console at web/latch-console.html
 ```
 
-Nothing above needs a network, a database, or an API key.
+Nothing above needs a network, a server, or an API key.
 
 ## Usage
 
@@ -163,7 +166,8 @@ never came back.
 
 ## What is proven
 
-`npm test` — 46 tests, no network, no database.
+`npm test` — 67 tests. No network, no server, no API keys: the Postgres suite
+runs a real PostgreSQL 18 in-process via PGlite.
 
 - **Crash injection at every journal write on the happy path**, both after the
   write became durable and before it did. Nine crash points, each restarted and
@@ -172,9 +176,14 @@ never came back.
   money permanently in a naive implementation.
 - **The published attack classes**: free shopping, settlement divergence,
   proof replay, concurrent double-spend, cost drain.
+- **Bounded retry under repeated process death**, and a receipt that commits to
+  the result the caller actually receives rather than a later re-production.
+  Both are regressions for real defects found in audit.
 - **Double-entry accounting** in the test facilitator, so every test asserts
   that no money was created or destroyed — not merely that a function returned
   `ok`.
+- **The full gate over Postgres**, crash recovery included, proving the
+  `Journal` port is a real abstraction rather than a comfortable fiction.
 
 ## Ports you must implement for production
 
