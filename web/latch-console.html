@@ -612,23 +612,32 @@ var STATES = [
   "void",
   "refunding",
   "refunded",
-  "stuck"
+  "stuck",
+  // Batched settlement, opt-in. See CREDIT below.
+  "credited",
+  "fronted",
+  "abandoning",
+  "written_off"
 ];
-var TERMINAL_STATES = ["delivered", "void", "refunded", "stuck"];
+var TERMINAL_STATES = ["delivered", "void", "refunded", "stuck", "written_off"];
 var IN_FLIGHT_STATES = [
   "verifying",
   "settling",
   "settled",
   "producing",
-  "refunding"
+  "refunding",
+  "credited",
+  "fronted",
+  "abandoning"
 ];
 var LEGAL = {
   // Payment proof arrived, or the quote timed out.
   quoted: ["verifying", "void"],
   // Facilitator says the proof is good, or it isn't.
   verifying: ["settling", "void"],
-  // Settlement submitted. It lands, or it doesn't and nothing moved.
-  settling: ["settled", "void"],
+  // Settlement submitted. It lands, it doesn't and nothing moved, or a batched
+  // rail accepted it for later and the seller extends credit.
+  settling: ["settled", "void", "credited"],
   // Money is durably ours. Only now may we spend compute.
   settled: ["producing"],
   // The good is being made. It works, we owe a refund, or a crash killed the
@@ -636,13 +645,21 @@ var LEGAL = {
   // attempt counter actually counts. Without the self-loop, a producer that
   // crashes the process retries forever: the cap reads entries, and recovery
   // could never write one.
-  producing: ["producing", "delivered", "refunding"],
+  producing: ["producing", "delivered", "refunding", "fronted", "abandoning"],
   // Refund is the compensating action for a settle we cannot honour.
   refunding: ["refunded", "stuck"],
+  // Credit: compute on a reservation, or the batch resolves before compute starts.
+  credited: ["producing", "settled", "void"],
+  // Delivered on credit. The batch lands (paid) or fails (seller's loss).
+  fronted: ["delivered", "written_off"],
+  // Failed on credit. If the batch lands there is money to return; if it
+  // fails, nothing moved and nothing was delivered.
+  abandoning: ["refunding", "void"],
   delivered: [],
   void: [],
   refunded: [],
-  stuck: []
+  stuck: [],
+  written_off: []
 };
 function isTerminal(state) {
   return TERMINAL_STATES.includes(state);
@@ -699,8 +716,10 @@ function auditChain(chain, signer) {
 var systemClock = { now: () => Date.now() };
 
 // src/gate.ts
+var CREDIT_HOLDING = /* @__PURE__ */ new Set(["settling", "credited", "producing", "fronted", "abandoning"]);
 var Latch = class {
   cfg;
+  credit;
   d;
   clock;
   constructor(config, deps) {
@@ -714,6 +733,13 @@ var Latch = class {
       // `settled`, which is not a legal transition.
       maxProduceAttempts: Math.max(1, config.maxProduceAttempts ?? 2)
     };
+    if (config.credit) {
+      assertMicros(config.credit.maxOutstandingMicros);
+      if (config.credit.maxPerPayerMicros !== void 0) {
+        assertMicros(config.credit.maxPerPayerMicros);
+      }
+    }
+    this.credit = config.credit;
     this.d = deps;
     this.clock = deps.clock ?? systemClock;
   }
@@ -779,13 +805,13 @@ var Latch = class {
     const idempotencyKey = this.keyFor(quote);
     if (isTerminal(snap.state)) {
       await this.backfillReceipt(quote, snap.state, idempotencyKey);
-      return this.replay(snap.state, idempotencyKey, quote);
+      return this.outcomeFor(snap.state, quote, idempotencyKey, true);
     }
     if (snap.state !== "quoted") {
       await this.recover(input.invoiceId);
       const after = await this.d.journal.get(input.invoiceId);
-      if (after && isTerminal(after.state)) {
-        return this.replay(after.state, idempotencyKey, quote);
+      if (after && (isTerminal(after.state) || after.state === "fronted")) {
+        return this.outcomeFor(after.state, quote, idempotencyKey, true);
       }
       throw new LatchError("concurrent_attempt", "Invoice is already being processed", {
         retryable: true
@@ -832,14 +858,19 @@ var Latch = class {
       failure = err instanceof Error ? err.message : String(err);
     }
     let reference;
-    if (outcome && outcome.ok) {
+    if (outcome && outcome.ok && outcome.final !== false) {
       reference = outcome.reference;
+    } else if (outcome && outcome.ok) {
+      return this.onPending(seq, quote, input.request, idempotencyKey);
     } else {
       const status = await this.confirmSettlement(idempotencyKey, seq, quote, failure);
-      if (status === void 0) {
+      if (status.kind === "pending") {
+        return this.onPending(seq, quote, input.request, idempotencyKey);
+      }
+      if (status.kind === "void") {
         throw new LatchError("settlement_failed", `Settlement failed: ${failure}`);
       }
-      reference = status;
+      reference = status.reference;
     }
     seq = await this.advance(seq, quote, "settled", { reference, amountMicros: quote.amountMicros });
     return this.deliver(seq, quote, input.request, idempotencyKey, reference);
@@ -889,6 +920,27 @@ var Latch = class {
         return this.runProducer(snap.seq, quote, idempotencyKey, this.referenceFrom(snap.entries));
       case "refunding":
         return this.finishRefund(snap.seq, quote, idempotencyKey, this.referenceFrom(snap.entries));
+      case "credited": {
+        const status = await this.statusOrPending(idempotencyKey);
+        if (status.state === "pending") return state;
+        if (status.state === "settled") {
+          const seq = await this.advance(snap.seq, quote, "settled", {
+            reference: status.reference,
+            amountMicros: status.amountMicros,
+            recovered: true
+          });
+          await this.d.journal.releaseCredit(quote.invoiceId);
+          return this.runProducer(seq, quote, idempotencyKey, status.reference);
+        }
+        await this.advance(snap.seq, quote, "void", { reason: "batch_failed_before_delivery" });
+        await this.d.journal.releaseCredit(quote.invoiceId);
+        await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+        return "void";
+      }
+      case "fronted":
+        return this.resolveCredit(snap.seq, quote, idempotencyKey);
+      case "abandoning":
+        return this.resolveAbandon(snap.seq, quote, idempotencyKey);
       default:
         return state;
     }
@@ -903,10 +955,22 @@ var Latch = class {
       } catch {
       }
     }
+    try {
+      await this.reconcileCredit();
+    } catch {
+    }
     return out;
   }
   async chain() {
     return this.d.journal.readChain();
+  }
+  /**
+   * Credit currently extended: what the seller stands to lose if every
+   * pending batch fails at once. Never more than the configured limit.
+   */
+  async creditExposure() {
+    const held = await this.d.journal.listCredit();
+    return { totalMicros: held.reduce((sum, r) => sum + r.amountMicros, 0), invoices: held.length };
   }
   // ---------------------------------------------------------------- internals
   keyFor(quote) {
@@ -939,10 +1003,10 @@ var Latch = class {
   /**
    * Ask the payment network what actually happened after an unclear settle.
    *
-   * Returns the settlement reference if the money moved, or undefined if it
-   * provably did not. Anything genuinely undecided leaves the invoice in
-   * `settling` and throws retryable, so the sweep resolves it later — an
-   * invoice parked in-flight is recoverable, a wrongly-voided one is not.
+   * Reports whether the money moved, provably did not, or is pending in a
+   * batch. A status the network cannot give leaves the invoice in `settling`
+   * and throws retryable, so the sweep resolves it later — an invoice parked
+   * in-flight is recoverable, a wrongly-voided one is not.
    */
   async confirmSettlement(idempotencyKey, seq, quote, failure) {
     let status;
@@ -954,21 +1018,16 @@ var Latch = class {
         detail: { invoiceId: quote.invoiceId }
       });
     }
-    if (status.state === "settled") return status.reference;
-    if (status.state === "pending") {
-      throw new LatchError("settlement_failed", "Settlement pending; retry shortly", {
-        retryable: true,
-        detail: { invoiceId: quote.invoiceId }
-      });
-    }
+    if (status.state === "settled") return { kind: "settled", reference: status.reference };
+    if (status.state === "pending") return { kind: "pending" };
     await this.advance(seq, quote, "void", { reason: failure, confirmed: true });
     await this.writeReceipt(quote, "void", { chargedMicros: 0 });
-    return void 0;
+    return { kind: "void" };
   }
   referenceFrom(entries) {
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
-      if (e && e.state === "settled" && typeof e.evidence.reference === "string") {
+      if (e && typeof e.evidence.reference === "string" && e.evidence.reference) {
         return e.evidence.reference;
       }
     }
@@ -976,32 +1035,18 @@ var Latch = class {
   }
   async deliver(seq, quote, request, idempotencyKey, reference) {
     const state = await this.runProducer(seq, quote, idempotencyKey, reference, request);
-    if (state === "delivered") {
-      const cached = await this.d.journal.getResult(idempotencyKey);
-      if (!cached) throw new LatchError("needs_operator", "Delivered invoice has no stored result");
-      return {
-        result: cached.payload,
-        receipt: await this.receiptFor(quote.invoiceId),
-        replayed: false
-      };
-    }
-    if (state === "refunded") {
-      throw new LatchError("producer_failed", "Could not deliver; your payment was refunded", {
-        detail: { invoiceId: quote.invoiceId }
-      });
-    }
-    throw new LatchError("needs_operator", "Delivery failed and the refund did not go through", {
-      detail: { invoiceId: quote.invoiceId }
-    });
+    return this.outcomeFor(state, quote, idempotencyKey, false);
   }
   async runProducer(seq, quote, idempotencyKey, reference, request) {
     const snap = await this.d.journal.get(quote.invoiceId);
     if (!snap) throw new LatchError("unknown_invoice", "Invoice vanished mid-flight");
+    const credit = this.onCredit(snap.entries);
     const attempts = snap.entries.filter((e) => e.state === "producing").length;
     if (attempts >= this.cfg.maxProduceAttempts) {
       const from2 = snap.state === "producing" ? snap.seq : seq;
-      const next = await this.advance(from2, quote, "refunding", { reason: "max_produce_attempts" });
-      return this.finishRefund(next, quote, idempotencyKey, reference);
+      return this.failProduction(from2, quote, idempotencyKey, reference, credit, {
+        reason: "max_produce_attempts"
+      });
     }
     const from = snap.state === "producing" ? snap.seq : seq;
     const currentSeq = await this.advance(from, quote, "producing", {
@@ -1011,10 +1056,9 @@ var Latch = class {
     const stored = await this.d.journal.getResult(`req_${idempotencyKey}`);
     const payload = request ?? stored?.payload;
     if (payload === void 0) {
-      const next = await this.advance(currentSeq, quote, "refunding", {
+      return this.failProduction(currentSeq, quote, idempotencyKey, reference, credit, {
         reason: "request_not_replayable"
       });
-      return this.finishRefund(next, quote, idempotencyKey, reference);
     }
     const controller = new AbortController();
     const deadline = this.clock.now() + this.cfg.produceTimeoutMs;
@@ -1029,17 +1073,22 @@ var Latch = class {
         budgetMicros: quote.amountMicros
       });
     } catch (err) {
-      const next = await this.advance(currentSeq, quote, "refunding", {
+      return this.failProduction(currentSeq, quote, idempotencyKey, reference, credit, {
         reason: controller.signal.aborted ? "producer_timeout" : "producer_failed",
         error: err instanceof Error ? err.message : String(err)
       });
-      return this.finishRefund(next, quote, idempotencyKey, reference);
     } finally {
       clearTimeout(timer);
     }
     await this.d.journal.putResult(idempotencyKey, result);
     const durable = await this.d.journal.getResult(idempotencyKey);
     const good = durable?.payload ?? result;
+    if (credit) {
+      const next = await this.advance(currentSeq, quote, "fronted", {
+        resultHash: hashRequest(good)
+      });
+      return this.resolveCredit(next, quote, idempotencyKey);
+    }
     await this.advance(currentSeq, quote, "delivered", {
       resultHash: hashRequest(good),
       reference
@@ -1122,6 +1171,14 @@ var Latch = class {
       });
       return;
     }
+    if (state === "written_off") {
+      const cached = await this.d.journal.getResult(idempotencyKey);
+      await this.writeReceipt(quote, "written_off", {
+        chargedMicros: 0,
+        resultHash: cached ? hashRequest(cached.payload) : void 0
+      });
+      return;
+    }
     await this.writeReceipt(quote, "void", { chargedMicros: 0 });
   }
   async receiptFor(invoiceId) {
@@ -1132,23 +1189,168 @@ var Latch = class {
     }
     throw new LatchError("needs_operator", "Receipt missing for a delivered invoice");
   }
-  async replay(state, idempotencyKey, quote) {
-    if (state === "delivered") {
+  /**
+   * What a caller gets for an invoice in a given state. One mapping for fresh
+   * deliveries and for replays, so the two can never disagree.
+   */
+  async outcomeFor(state, quote, idempotencyKey, replayed) {
+    const good = async () => {
       const cached = await this.d.journal.getResult(idempotencyKey);
       if (!cached) throw new LatchError("needs_operator", "Delivered invoice has no stored result");
-      return {
-        result: cached.payload,
-        receipt: await this.receiptFor(quote.invoiceId),
-        replayed: true
-      };
+      return cached.payload;
+    };
+    const detail = { detail: { invoiceId: quote.invoiceId } };
+    switch (state) {
+      case "delivered":
+        return {
+          result: await good(),
+          receipt: await this.receiptFor(quote.invoiceId),
+          replayed,
+          settlement: "final"
+        };
+      case "fronted":
+        return { result: await good(), replayed, settlement: "pending" };
+      case "written_off":
+        return {
+          result: await good(),
+          receipt: await this.receiptFor(quote.invoiceId),
+          replayed,
+          settlement: "written_off"
+        };
+      case "refunded":
+        throw replayed ? new LatchError("producer_failed", "This invoice was refunded; request a new quote") : new LatchError("producer_failed", "Could not deliver; your payment was refunded", detail);
+      case "abandoning":
+        throw new LatchError(
+          "producer_failed",
+          "Could not deliver. Your payment is pending in a batch and will be returned if it lands",
+          detail
+        );
+      case "stuck":
+        throw replayed ? new LatchError("needs_operator", "This invoice needs operator review") : new LatchError("needs_operator", "Delivery failed and the refund did not go through", detail);
+      case "void":
+        if (!replayed) {
+          throw new LatchError("producer_failed", "Could not deliver; you were not charged", detail);
+        }
+        throw new LatchError("invoice_not_payable", "This invoice is closed");
+      default:
+        throw new LatchError("invoice_not_payable", "This invoice is closed");
     }
-    if (state === "refunded") {
-      throw new LatchError("producer_failed", "This invoice was refunded; request a new quote");
+  }
+  // ---------------------------------------------------------------- credit
+  /**
+   * The rail accepted the payment for a later batch. Without a credit policy
+   * the invoice waits in `settling` and the sweep finishes it once the batch
+   * lands. With one, the gate reserves credit — atomically, within its limits —
+   * and serves the caller now.
+   */
+  async onPending(seq, quote, request, idempotencyKey) {
+    const wait2 = (why) => new LatchError("settlement_failed", why, {
+      retryable: true,
+      detail: { invoiceId: quote.invoiceId }
+    });
+    if (!this.credit) throw wait2("Settlement pending in a batch; retry once it lands");
+    const reserved = await this.d.journal.reserveCredit({
+      invoiceId: quote.invoiceId,
+      payer: quote.payer,
+      amountMicros: quote.amountMicros,
+      totalLimitMicros: this.credit.maxOutstandingMicros,
+      perPayerLimitMicros: this.credit.maxPerPayerMicros
+    });
+    if (!reserved) throw wait2("Settlement pending and the credit limit is reached; retry once it lands");
+    const next = await this.advance(seq, quote, "credited", {
+      creditMicros: quote.amountMicros,
+      idempotencyKey
+    });
+    return this.deliver(next, quote, request, idempotencyKey, "");
+  }
+  /** Producing on credit: credited, and not since upgraded to a final settlement. */
+  onCredit(entries) {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const s = entries[i]?.state;
+      if (s === "settled") return false;
+      if (s === "credited") return true;
     }
-    if (state === "stuck") {
-      throw new LatchError("needs_operator", "This invoice needs operator review");
+    return false;
+  }
+  /**
+   * Production failed. On the strict path the money has moved, so refund it.
+   * On credit nothing has moved yet: wait for the batch to say whether there
+   * is anything to return.
+   */
+  async failProduction(from, quote, idempotencyKey, reference, credit, evidence) {
+    if (credit) {
+      const next2 = await this.advance(from, quote, "abandoning", evidence);
+      return this.resolveAbandon(next2, quote, idempotencyKey);
     }
-    throw new LatchError("invoice_not_payable", "This invoice is closed");
+    const next = await this.advance(from, quote, "refunding", evidence);
+    return this.finishRefund(next, quote, idempotencyKey, reference);
+  }
+  /** A good went out on credit. Settle the books once the batch decides. */
+  async resolveCredit(seq, quote, idempotencyKey) {
+    const status = await this.statusOrPending(idempotencyKey);
+    if (status.state === "pending") return "fronted";
+    const durable = await this.d.journal.getResult(idempotencyKey);
+    const resultHash = durable ? hashRequest(durable.payload) : void 0;
+    if (status.state === "settled") {
+      await this.advance(seq, quote, "delivered", {
+        reference: status.reference,
+        resultHash,
+        settledAfterDelivery: true
+      });
+      await this.d.journal.releaseCredit(quote.invoiceId);
+      await this.writeReceipt(quote, "delivered", {
+        chargedMicros: quote.amountMicros,
+        resultHash,
+        settlementRef: status.reference
+      });
+      return "delivered";
+    }
+    await this.advance(seq, quote, "written_off", {
+      reason: "batch_failed",
+      lossMicros: quote.amountMicros
+    });
+    await this.d.journal.releaseCredit(quote.invoiceId);
+    await this.writeReceipt(quote, "written_off", { chargedMicros: 0, resultHash });
+    return "written_off";
+  }
+  /** Production failed on credit. Refund if the batch landed; void if it did not. */
+  async resolveAbandon(seq, quote, idempotencyKey) {
+    const status = await this.statusOrPending(idempotencyKey);
+    if (status.state === "pending") return "abandoning";
+    if (status.state === "settled") {
+      const next = await this.advance(seq, quote, "refunding", { reference: status.reference });
+      await this.d.journal.releaseCredit(quote.invoiceId);
+      return this.finishRefund(next, quote, idempotencyKey, status.reference);
+    }
+    await this.advance(seq, quote, "void", { reason: "batch_failed_before_delivery" });
+    await this.d.journal.releaseCredit(quote.invoiceId);
+    await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+    return "void";
+  }
+  /**
+   * Ask the network, treating an unanswerable question as "still pending".
+   * Under credit that is the safe reading: it keeps waiting rather than voiding
+   * a payment or writing off a good on the strength of an error.
+   */
+  async statusOrPending(idempotencyKey) {
+    try {
+      return await this.d.facilitator.statusOf(idempotencyKey);
+    } catch {
+      return { state: "pending" };
+    }
+  }
+  /**
+   * Release reservations whose invoice has left credit. Reservations are
+   * released as invoices resolve; this catches any a crash stranded between a
+   * transition and its release. A stranded reservation can only make the gate
+   * extend LESS credit, never more — it fails safe — and this heals it.
+   */
+  async reconcileCredit() {
+    for (const r of await this.d.journal.listCredit()) {
+      const snap = await this.d.journal.get(r.invoiceId);
+      if (snap && CREDIT_HOLDING.has(snap.state)) continue;
+      await this.d.journal.releaseCredit(r.invoiceId);
+    }
   }
 };
 
@@ -1159,6 +1361,7 @@ function memoryJournal() {
   const results = /* @__PURE__ */ new Map();
   const chain = [];
   let head = "";
+  const credit = /* @__PURE__ */ new Map();
   function snapshotOf(rec) {
     const last = rec.entries[rec.entries.length - 1];
     if (!last) throw new Error("Corrupt journal: invoice with no entries");
@@ -1231,6 +1434,27 @@ function memoryJournal() {
     async readChain() {
       return [...chain];
     },
+    async reserveCredit({ invoiceId, payer, amountMicros, totalLimitMicros, perPayerLimitMicros }) {
+      if (credit.has(invoiceId)) return true;
+      let total = 0;
+      let mine = 0;
+      for (const c of credit.values()) {
+        total += c.amountMicros;
+        if (c.payer === payer) mine += c.amountMicros;
+      }
+      if (total + amountMicros > totalLimitMicros) return false;
+      if (perPayerLimitMicros !== void 0 && mine + amountMicros > perPayerLimitMicros) {
+        return false;
+      }
+      credit.set(invoiceId, { payer, amountMicros });
+      return true;
+    },
+    async releaseCredit(invoiceId) {
+      credit.delete(invoiceId);
+    },
+    async listCredit() {
+      return [...credit].map(([invoiceId, c]) => ({ invoiceId, ...c }));
+    },
     snapshotAll() {
       return [...invoices.values()].map(snapshotOf);
     }
@@ -1300,6 +1524,15 @@ function ledgerFacilitator(initial = {}) {
       }
       return n;
     },
+    failPendingBatch() {
+      let n = 0;
+      for (const [key, s] of settlements) {
+        if (s.final) continue;
+        settlements.delete(key);
+        n++;
+      }
+      return n;
+    },
     async verify(proof, expected) {
       if (faults.verifyThrows) throw new Error("facilitator unreachable");
       const p = parseProof(proof);
@@ -1316,7 +1549,12 @@ function ledgerFacilitator(initial = {}) {
       }
       const existing = settlements.get(idempotencyKey);
       if (existing) {
-        return { ok: true, reference: existing.reference, amountMicros: existing.amountMicros };
+        return {
+          ok: true,
+          reference: existing.reference,
+          amountMicros: existing.amountMicros,
+          final: existing.final
+        };
       }
       if (faults.settleThrows) throw new Error("settlement network error");
       if (faults.settleFails) return { ok: false, reason: "declined", moved: false };
@@ -1324,6 +1562,17 @@ function ledgerFacilitator(initial = {}) {
         return { ok: false, reason: "insufficient_funds", moved: false };
       }
       const reference = `stl_${++counter}`;
+      if (faults.batched) {
+        settlements.set(idempotencyKey, {
+          reference,
+          invoiceId: quote.invoiceId,
+          amountMicros: quote.amountMicros,
+          final: false,
+          payer: quote.payer,
+          payTo: quote.payTo
+        });
+        return { ok: true, reference, amountMicros: quote.amountMicros, final: false };
+      }
       if (faults.settlePending) {
         settlements.set(idempotencyKey, {
           reference,

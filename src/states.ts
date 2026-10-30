@@ -33,11 +33,16 @@ export const STATES = [
   "refunding",
   "refunded",
   "stuck",
+  // Batched settlement, opt-in. See CREDIT below.
+  "credited",
+  "fronted",
+  "abandoning",
+  "written_off",
 ] as const;
 
 export type State = (typeof STATES)[number];
 
-export const TERMINAL_STATES = ["delivered", "void", "refunded", "stuck"] as const;
+export const TERMINAL_STATES = ["delivered", "void", "refunded", "stuck", "written_off"] as const;
 export type TerminalState = (typeof TERMINAL_STATES)[number];
 
 /** States where work was started but not finished. Recovery targets exactly these. */
@@ -47,15 +52,43 @@ export const IN_FLIGHT_STATES = [
   "settled",
   "producing",
   "refunding",
+  "credited",
+  "fronted",
+  "abandoning",
 ] as const;
+
+/**
+ * CREDIT — batched settlement.
+ *
+ * Some rails settle cheaply by batching: a payment is accepted now and becomes
+ * final later. The strict rule ("never produce before settled") then forces a
+ * choice — make the caller wait for the batch, or deliver now and carry the
+ * risk until it lands. Waiting is the default. Delivering early is opt-in,
+ * bounded by a credit limit, and gets its own states so the risk is visible:
+ *
+ *   credited     settlement accepted into a batch, credit reserved. The ONLY
+ *                state that may reach compute before money is final.
+ *   fronted      good delivered on credit; settlement still pending.
+ *   abandoning   production failed on credit; waiting for the batch to decide
+ *                whether there is money to refund.
+ *   written_off  terminal. Good delivered, batch failed, never paid. The
+ *                seller absorbed the loss — bounded by the credit limit.
+ *
+ * Credit relaxes exactly one half of the promise, and only for the seller. The
+ * caller's half is untouched: a caller is never charged without receiving the
+ * good or a refund. What credit gives up is the seller's half — "delivered
+ * implies paid" — and only up to a limit the seller chose.
+ */
+export const CREDIT_STATES = ["credited", "fronted", "abandoning"] as const;
 
 const LEGAL: Record<State, readonly State[]> = {
   // Payment proof arrived, or the quote timed out.
   quoted: ["verifying", "void"],
   // Facilitator says the proof is good, or it isn't.
   verifying: ["settling", "void"],
-  // Settlement submitted. It lands, or it doesn't and nothing moved.
-  settling: ["settled", "void"],
+  // Settlement submitted. It lands, it doesn't and nothing moved, or a batched
+  // rail accepted it for later and the seller extends credit.
+  settling: ["settled", "void", "credited"],
   // Money is durably ours. Only now may we spend compute.
   settled: ["producing"],
   // The good is being made. It works, we owe a refund, or a crash killed the
@@ -63,13 +96,21 @@ const LEGAL: Record<State, readonly State[]> = {
   // attempt counter actually counts. Without the self-loop, a producer that
   // crashes the process retries forever: the cap reads entries, and recovery
   // could never write one.
-  producing: ["producing", "delivered", "refunding"],
+  producing: ["producing", "delivered", "refunding", "fronted", "abandoning"],
   // Refund is the compensating action for a settle we cannot honour.
   refunding: ["refunded", "stuck"],
+  // Credit: compute on a reservation, or the batch resolves before compute starts.
+  credited: ["producing", "settled", "void"],
+  // Delivered on credit. The batch lands (paid) or fails (seller's loss).
+  fronted: ["delivered", "written_off"],
+  // Failed on credit. If the batch lands there is money to return; if it
+  // fails, nothing moved and nothing was delivered.
+  abandoning: ["refunding", "void"],
   delivered: [],
   void: [],
   refunded: [],
   stuck: [],
+  written_off: [],
 };
 
 export function isTerminal(state: State): state is TerminalState {
@@ -93,6 +134,14 @@ export function assertTransition(from: State, to: State): void {
 /**
  * Has the caller's money moved to us, and stayed moved?
  * Used to decide whether a failure owes a refund or owes nothing.
+ */
+/**
+ * Has the caller's money moved to us, as far as the state name alone shows?
+ *
+ * Exact for the strict path. One caveat under credit: `producing` entered from
+ * `credited` runs before the batch is final, so the money is still pending —
+ * only the journal history can tell the two apart. The credit states
+ * themselves are all uncharged.
  */
 export function isCharged(state: State): boolean {
   return ["settled", "producing", "delivered", "refunding", "stuck"].includes(state);

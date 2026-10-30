@@ -84,6 +84,24 @@ create table if not exists latch_chain_head (
 
 insert into latch_chain_head (id, head) values (1, '')
   on conflict (id) do nothing;
+
+-- Credit for batched settlement. Unlike the journal this is CURRENT STATE,
+-- not history: a reservation is deleted once its invoice resolves, and the
+-- journal remains the record of what happened.
+create table if not exists latch_credit (
+  invoice_id    text   primary key,
+  payer         text   not null,
+  amount_micros bigint not null,
+  reserved_at   bigint not null
+);
+
+-- A single row that serialises credit decisions, so check-and-reserve is atomic.
+create table if not exists latch_credit_lock (
+  id int primary key
+);
+
+insert into latch_credit_lock (id) values (1)
+  on conflict (id) do nothing;
 `;
 
 export async function migrate(sql: SqlExecutor): Promise<void> {
@@ -265,6 +283,54 @@ export function postgresJournal(sql: SqlClient): Journal {
         await tx.query(`update latch_chain_head set head = $1 where id = 1`, [hash]);
         return signed;
       });
+    },
+
+    async reserveCredit({ invoiceId, payer, amountMicros, totalLimitMicros, perPayerLimitMicros }) {
+      return sql.transaction(async (tx) => {
+        // Every credit decision queues behind one row lock. Without it two
+        // concurrent sales read the same total, both fit under the limit, and
+        // together exceed it — the check-then-act race this library exists to
+        // rule out.
+        await tx.query(`select id from latch_credit_lock where id = 1 for update`);
+
+        const held = await tx.query(`select 1 from latch_credit where invoice_id = $1`, [invoiceId]);
+        if (held.rows.length > 0) return true; // idempotent per invoice
+
+        const sums = await tx.query<{ total: string | number; mine: string | number }>(
+          `select coalesce(sum(amount_micros), 0) as total,
+                  coalesce(sum(amount_micros) filter (where payer = $1), 0) as mine
+             from latch_credit`,
+          [payer],
+        );
+        const total = num(sums.rows[0]?.total ?? 0);
+        const mine = num(sums.rows[0]?.mine ?? 0);
+        if (total + amountMicros > totalLimitMicros) return false;
+        if (perPayerLimitMicros !== undefined && mine + amountMicros > perPayerLimitMicros) {
+          return false;
+        }
+
+        await tx.query(
+          `insert into latch_credit (invoice_id, payer, amount_micros, reserved_at)
+           values ($1, $2, $3, $4)`,
+          [invoiceId, payer, amountMicros, Date.now()],
+        );
+        return true;
+      });
+    },
+
+    async releaseCredit(invoiceId) {
+      await sql.query(`delete from latch_credit where invoice_id = $1`, [invoiceId]);
+    },
+
+    async listCredit() {
+      const res = await sql.query<{ invoice_id: string; payer: string; amount_micros: string | number }>(
+        `select invoice_id, payer, amount_micros from latch_credit order by reserved_at asc`,
+      );
+      return res.rows.map((r) => ({
+        invoiceId: r.invoice_id,
+        payer: r.payer,
+        amountMicros: num(r.amount_micros),
+      }));
     },
 
     async readChain() {

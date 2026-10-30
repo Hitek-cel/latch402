@@ -24,6 +24,12 @@ export type LedgerFaults = {
   /** Settlement is accepted but not yet final. */
   settlePending?: boolean;
   refundFails?: boolean;
+  /**
+   * Model a batched rail: settle accepts the payment for a later batch and
+   * returns `final: false`. Nothing moves until `finalizePending()` lands the
+   * batch, or `failPendingBatch()` drops it.
+   */
+  batched?: boolean;
 };
 
 export type LedgerFacilitator = Facilitator & {
@@ -34,6 +40,8 @@ export type LedgerFacilitator = Facilitator & {
   settlementCount(): number;
   /** Complete any settlement left pending, as the real network eventually would. */
   finalizePending(): number;
+  /** The batch failed: drop every pending settlement. Nothing moves; statusOf reports unknown. */
+  failPendingBatch(): number;
 };
 
 type Proof = { invoiceId: string; payer: string; amountMicros: number; nonce: string };
@@ -123,6 +131,15 @@ export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerF
       }
       return n;
     },
+    failPendingBatch() {
+      let n = 0;
+      for (const [key, s] of settlements) {
+        if (s.final) continue;
+        settlements.delete(key);
+        n++;
+      }
+      return n;
+    },
 
     async verify(proof, expected): Promise<VerifyOutcome> {
       if (faults.verifyThrows) throw new Error("facilitator unreachable");
@@ -149,7 +166,14 @@ export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerF
       const existing = settlements.get(idempotencyKey);
       if (existing) {
         // Idempotent: replaying the same key never moves money twice.
-        return { ok: true, reference: existing.reference, amountMicros: existing.amountMicros };
+        // Report finality truthfully on replay. Returning a bare ok:true here
+        // would tell the caller a still-pending batch payment was final.
+        return {
+          ok: true,
+          reference: existing.reference,
+          amountMicros: existing.amountMicros,
+          final: existing.final,
+        };
       }
       if (faults.settleThrows) throw new Error("settlement network error");
       if (faults.settleFails) return { ok: false, reason: "declined", moved: false };
@@ -158,6 +182,17 @@ export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerF
       }
 
       const reference = `stl_${++counter}`;
+      if (faults.batched) {
+        settlements.set(idempotencyKey, {
+          reference,
+          invoiceId: quote.invoiceId,
+          amountMicros: quote.amountMicros,
+          final: false,
+          payer: quote.payer,
+          payTo: quote.payTo,
+        });
+        return { ok: true, reference, amountMicros: quote.amountMicros, final: false };
+      }
       if (faults.settlePending) {
         settlements.set(idempotencyKey, {
           reference,

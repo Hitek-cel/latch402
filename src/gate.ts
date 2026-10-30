@@ -31,7 +31,27 @@ export type GateConfig = {
   produceTimeoutMs?: number;
   /** How many times a recovered invoice may re-enter production before we refund instead. */
   maxProduceAttempts?: number;
+  /**
+   * Batched settlement. When a rail accepts a payment for a later batch, the
+   * gate waits for the batch to land — the default, and always safe. Set this
+   * and it may instead serve the caller now, on credit, within these limits.
+   */
+  credit?: CreditPolicy;
 };
+
+/**
+ * How much unsettled value the seller is willing to carry. This is the most
+ * the seller can lose if every pending batch fails at once.
+ */
+export type CreditPolicy = {
+  /** Most outstanding credit, across all callers combined. */
+  maxOutstandingMicros: number;
+  /** Most outstanding credit for any single caller. Defaults to no per-caller limit. */
+  maxPerPayerMicros?: number;
+};
+
+/** States in which an invoice may legitimately hold a credit reservation. */
+const CREDIT_HOLDING = new Set<State>(["settling", "credited", "producing", "fronted", "abandoning"]);
 
 export type GateDeps<TReq, TRes> = {
   journal: Journal;
@@ -64,9 +84,19 @@ export type PaymentRequired = {
 
 export type RedeemResult<TRes> = {
   result: TRes;
-  receipt: SignedReceipt;
+  /**
+   * Present once the outcome is final. Absent while the good has been
+   * delivered on credit and the batch has not landed yet.
+   */
+  receipt?: SignedReceipt;
   /** True when this came from the idempotency cache rather than fresh production. */
   replayed: boolean;
+  /**
+   * "final"       charged, and the settlement is final.
+   * "pending"     delivered on credit; your payment is in a batch not yet landed.
+   * "written_off" delivered on credit; the batch failed and you were never charged.
+   */
+  settlement: "final" | "pending" | "written_off";
 };
 
 /**
@@ -82,9 +112,15 @@ export type RedeemResult<TRes> = {
  *
  * Producing first is how a gate gives goods away for free. Producing without a
  * compensating refund path is how it quietly steals. Both are ruled out below.
+ *
+ * One exception, opt-in: on a batched rail with a credit policy configured, a
+ * waiting caller may be served before the batch lands. That trades the
+ * seller's own safety — never the caller's — for latency, within a limit the
+ * seller chose. See CREDIT in states.ts.
  */
 export class Latch<TReq, TRes> {
-  private readonly cfg: Required<GateConfig>;
+  private readonly cfg: Required<Omit<GateConfig, "credit">>;
+  private readonly credit: CreditPolicy | undefined;
   private readonly d: GateDeps<TReq, TRes>;
   private readonly clock: Clock;
 
@@ -99,6 +135,13 @@ export class Latch<TReq, TRes> {
       // `settled`, which is not a legal transition.
       maxProduceAttempts: Math.max(1, config.maxProduceAttempts ?? 2),
     };
+    if (config.credit) {
+      assertMicros(config.credit.maxOutstandingMicros);
+      if (config.credit.maxPerPayerMicros !== undefined) {
+        assertMicros(config.credit.maxPerPayerMicros);
+      }
+    }
+    this.credit = config.credit;
     this.d = deps;
     this.clock = deps.clock ?? systemClock;
   }
@@ -183,14 +226,15 @@ export class Latch<TReq, TRes> {
     // Already finished: replay the stored outcome rather than charging twice.
     if (isTerminal(snap.state)) {
       await this.backfillReceipt(quote, snap.state, idempotencyKey);
-      return this.replay(snap.state, idempotencyKey, quote);
+      return this.outcomeFor(snap.state, quote, idempotencyKey, true);
     }
     // Crashed mid-flight: finish or compensate before starting anything new.
     if (snap.state !== "quoted") {
       await this.recover(input.invoiceId);
       const after = await this.d.journal.get(input.invoiceId);
-      if (after && isTerminal(after.state)) {
-        return this.replay(after.state, idempotencyKey, quote);
+      // A good delivered on credit is the caller's, batch landed or not.
+      if (after && (isTerminal(after.state) || after.state === "fronted")) {
+        return this.outcomeFor(after.state, quote, idempotencyKey, true);
       }
       throw new LatchError("concurrent_attempt", "Invoice is already being processed", {
         retryable: true,
@@ -264,14 +308,20 @@ export class Latch<TReq, TRes> {
     // Trusting the return value here is precisely how a gate ends up recording
     // "nothing moved" over a charge that really happened.
     let reference: string;
-    if (outcome && outcome.ok) {
+    if (outcome && outcome.ok && outcome.final !== false) {
       reference = outcome.reference;
+    } else if (outcome && outcome.ok) {
+      // Accepted into a batch. Nothing has moved yet.
+      return this.onPending(seq, quote, input.request, idempotencyKey);
     } else {
       const status = await this.confirmSettlement(idempotencyKey, seq, quote, failure);
-      if (status === undefined) {
+      if (status.kind === "pending") {
+        return this.onPending(seq, quote, input.request, idempotencyKey);
+      }
+      if (status.kind === "void") {
         throw new LatchError("settlement_failed", `Settlement failed: ${failure}`);
       }
-      reference = status;
+      reference = status.reference;
     }
 
     seq = await this.advance(seq, quote, "settled", { reference, amountMicros: quote.amountMicros });
@@ -337,6 +387,33 @@ export class Latch<TReq, TRes> {
       case "refunding":
         return this.finishRefund(snap.seq, quote, idempotencyKey, this.referenceFrom(snap.entries));
 
+      case "credited": {
+        // Credit was reserved but compute never started. Recovery takes on no
+        // new risk: it waits for the batch instead of producing against it.
+        // Credit exists to serve a caller who is waiting; after a crash, none is.
+        const status = await this.statusOrPending(idempotencyKey);
+        if (status.state === "pending") return state;
+        if (status.state === "settled") {
+          const seq = await this.advance(snap.seq, quote, "settled", {
+            reference: status.reference,
+            amountMicros: status.amountMicros,
+            recovered: true,
+          });
+          await this.d.journal.releaseCredit(quote.invoiceId);
+          return this.runProducer(seq, quote, idempotencyKey, status.reference);
+        }
+        await this.advance(snap.seq, quote, "void", { reason: "batch_failed_before_delivery" });
+        await this.d.journal.releaseCredit(quote.invoiceId);
+        await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+        return "void";
+      }
+
+      case "fronted":
+        return this.resolveCredit(snap.seq, quote, idempotencyKey);
+
+      case "abandoning":
+        return this.resolveAbandon(snap.seq, quote, idempotencyKey);
+
       default:
         return state;
     }
@@ -353,11 +430,25 @@ export class Latch<TReq, TRes> {
         // One poisoned invoice must not stop the sweep.
       }
     }
+    try {
+      await this.reconcileCredit();
+    } catch {
+      // Reconciliation is housekeeping; it must never fail a sweep.
+    }
     return out;
   }
 
   async chain(): Promise<SignedReceipt[]> {
     return this.d.journal.readChain();
+  }
+
+  /**
+   * Credit currently extended: what the seller stands to lose if every
+   * pending batch fails at once. Never more than the configured limit.
+   */
+  async creditExposure(): Promise<{ totalMicros: number; invoices: number }> {
+    const held = await this.d.journal.listCredit();
+    return { totalMicros: held.reduce((sum, r) => sum + r.amountMicros, 0), invoices: held.length };
   }
 
   // ---------------------------------------------------------------- internals
@@ -401,17 +492,17 @@ export class Latch<TReq, TRes> {
   /**
    * Ask the payment network what actually happened after an unclear settle.
    *
-   * Returns the settlement reference if the money moved, or undefined if it
-   * provably did not. Anything genuinely undecided leaves the invoice in
-   * `settling` and throws retryable, so the sweep resolves it later — an
-   * invoice parked in-flight is recoverable, a wrongly-voided one is not.
+   * Reports whether the money moved, provably did not, or is pending in a
+   * batch. A status the network cannot give leaves the invoice in `settling`
+   * and throws retryable, so the sweep resolves it later — an invoice parked
+   * in-flight is recoverable, a wrongly-voided one is not.
    */
   private async confirmSettlement(
     idempotencyKey: string,
     seq: number,
     quote: Quote,
     failure: string,
-  ): Promise<string | undefined> {
+  ): Promise<{ kind: "settled"; reference: string } | { kind: "pending" } | { kind: "void" }> {
     let status: Awaited<ReturnType<Facilitator["statusOf"]>>;
     try {
       status = await this.d.facilitator.statusOf(idempotencyKey);
@@ -422,24 +513,22 @@ export class Latch<TReq, TRes> {
       });
     }
 
-    if (status.state === "settled") return status.reference;
-    if (status.state === "pending") {
-      throw new LatchError("settlement_failed", "Settlement pending; retry shortly", {
-        retryable: true,
-        detail: { invoiceId: quote.invoiceId },
-      });
-    }
+    if (status.state === "settled") return { kind: "settled", reference: status.reference };
+    if (status.state === "pending") return { kind: "pending" };
 
     // Confirmed: no money moved. Safe to close with nothing charged.
     await this.advance(seq, quote, "void", { reason: failure, confirmed: true });
     await this.writeReceipt(quote, "void", { chargedMicros: 0 });
-    return undefined;
+    return { kind: "void" };
   }
 
   private referenceFrom(entries: readonly JournalEntry[]): string {
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
-      if (e && e.state === "settled" && typeof e.evidence.reference === "string") {
+      // The settlement reference is recorded under `reference` by whichever
+      // transition learned it: `settled` on the strict path, `refunding` or
+      // `delivered` when a batch landed after the good went out on credit.
+      if (e && typeof e.evidence.reference === "string" && e.evidence.reference) {
         return e.evidence.reference;
       }
     }
@@ -454,23 +543,7 @@ export class Latch<TReq, TRes> {
     reference: string,
   ): Promise<RedeemResult<TRes>> {
     const state = await this.runProducer(seq, quote, idempotencyKey, reference, request);
-    if (state === "delivered") {
-      const cached = await this.d.journal.getResult(idempotencyKey);
-      if (!cached) throw new LatchError("needs_operator", "Delivered invoice has no stored result");
-      return {
-        result: cached.payload as TRes,
-        receipt: await this.receiptFor(quote.invoiceId),
-        replayed: false,
-      };
-    }
-    if (state === "refunded") {
-      throw new LatchError("producer_failed", "Could not deliver; your payment was refunded", {
-        detail: { invoiceId: quote.invoiceId },
-      });
-    }
-    throw new LatchError("needs_operator", "Delivery failed and the refund did not go through", {
-      detail: { invoiceId: quote.invoiceId },
-    });
+    return this.outcomeFor(state, quote, idempotencyKey, false);
   }
 
   private async runProducer(
@@ -483,13 +556,15 @@ export class Latch<TReq, TRes> {
     const snap = await this.d.journal.get(quote.invoiceId);
     if (!snap) throw new LatchError("unknown_invoice", "Invoice vanished mid-flight");
 
+    const credit = this.onCredit(snap.entries);
     const attempts = snap.entries.filter((e) => e.state === "producing").length;
     if (attempts >= this.cfg.maxProduceAttempts) {
       // Refusing to retry forever is a safety feature. A producer that crashes
       // on every attempt would otherwise hold the caller's money indefinitely.
       const from = snap.state === "producing" ? snap.seq : seq;
-      const next = await this.advance(from, quote, "refunding", { reason: "max_produce_attempts" });
-      return this.finishRefund(next, quote, idempotencyKey, reference);
+      return this.failProduction(from, quote, idempotencyKey, reference, credit, {
+        reason: "max_produce_attempts",
+      });
     }
 
     // Every attempt appends an entry, including recovery re-entering an
@@ -507,10 +582,9 @@ export class Latch<TReq, TRes> {
     const payload = (request ?? stored?.payload) as TReq | undefined;
     if (payload === undefined) {
       // Nothing to re-run from. The honest move is to give the money back.
-      const next = await this.advance(currentSeq, quote, "refunding", {
+      return this.failProduction(currentSeq, quote, idempotencyKey, reference, credit, {
         reason: "request_not_replayable",
       });
-      return this.finishRefund(next, quote, idempotencyKey, reference);
     }
 
     const controller = new AbortController();
@@ -527,11 +601,10 @@ export class Latch<TReq, TRes> {
         budgetMicros: quote.amountMicros,
       });
     } catch (err) {
-      const next = await this.advance(currentSeq, quote, "refunding", {
+      return this.failProduction(currentSeq, quote, idempotencyKey, reference, credit, {
         reason: controller.signal.aborted ? "producer_timeout" : "producer_failed",
         error: err instanceof Error ? err.message : String(err),
       });
-      return this.finishRefund(next, quote, idempotencyKey, reference);
     } finally {
       clearTimeout(timer);
     }
@@ -545,6 +618,15 @@ export class Latch<TReq, TRes> {
     await this.d.journal.putResult(idempotencyKey, result);
     const durable = await this.d.journal.getResult(idempotencyKey);
     const good = (durable?.payload ?? result) as TRes;
+
+    if (credit) {
+      // Delivered before the batch landed. Not final until it does.
+      const next = await this.advance(currentSeq, quote, "fronted", {
+        resultHash: hashRequest(good),
+      });
+      return this.resolveCredit(next, quote, idempotencyKey);
+    }
+
     await this.advance(currentSeq, quote, "delivered", {
       resultHash: hashRequest(good),
       reference,
@@ -651,6 +733,14 @@ export class Latch<TReq, TRes> {
       });
       return;
     }
+    if (state === "written_off") {
+      const cached = await this.d.journal.getResult(idempotencyKey);
+      await this.writeReceipt(quote, "written_off", {
+        chargedMicros: 0,
+        resultHash: cached ? hashRequest(cached.payload) : undefined,
+      });
+      return;
+    }
     await this.writeReceipt(quote, "void", { chargedMicros: 0 });
   }
 
@@ -663,27 +753,217 @@ export class Latch<TReq, TRes> {
     throw new LatchError("needs_operator", "Receipt missing for a delivered invoice");
   }
 
-  private async replay(
+  /**
+   * What a caller gets for an invoice in a given state. One mapping for fresh
+   * deliveries and for replays, so the two can never disagree.
+   */
+  private async outcomeFor(
     state: State,
-    idempotencyKey: string,
     quote: Quote,
+    idempotencyKey: string,
+    replayed: boolean,
   ): Promise<RedeemResult<TRes>> {
-    if (state === "delivered") {
+    const good = async (): Promise<TRes> => {
       const cached = await this.d.journal.getResult(idempotencyKey);
       if (!cached) throw new LatchError("needs_operator", "Delivered invoice has no stored result");
-      return {
-        result: cached.payload as TRes,
-        receipt: await this.receiptFor(quote.invoiceId),
-        replayed: true,
-      };
+      return cached.payload as TRes;
+    };
+    const detail = { detail: { invoiceId: quote.invoiceId } };
+
+    switch (state) {
+      case "delivered":
+        return {
+          result: await good(),
+          receipt: await this.receiptFor(quote.invoiceId),
+          replayed,
+          settlement: "final",
+        };
+      case "fronted":
+        return { result: await good(), replayed, settlement: "pending" };
+      case "written_off":
+        return {
+          result: await good(),
+          receipt: await this.receiptFor(quote.invoiceId),
+          replayed,
+          settlement: "written_off",
+        };
+      case "refunded":
+        throw replayed
+          ? new LatchError("producer_failed", "This invoice was refunded; request a new quote")
+          : new LatchError("producer_failed", "Could not deliver; your payment was refunded", detail);
+      case "abandoning":
+        throw new LatchError(
+          "producer_failed",
+          "Could not deliver. Your payment is pending in a batch and will be returned if it lands",
+          detail,
+        );
+      case "stuck":
+        throw replayed
+          ? new LatchError("needs_operator", "This invoice needs operator review")
+          : new LatchError("needs_operator", "Delivery failed and the refund did not go through", detail);
+      case "void":
+        if (!replayed) {
+          throw new LatchError("producer_failed", "Could not deliver; you were not charged", detail);
+        }
+        throw new LatchError("invoice_not_payable", "This invoice is closed");
+      default:
+        throw new LatchError("invoice_not_payable", "This invoice is closed");
     }
-    if (state === "refunded") {
-      throw new LatchError("producer_failed", "This invoice was refunded; request a new quote");
+  }
+
+  // ---------------------------------------------------------------- credit
+
+  /**
+   * The rail accepted the payment for a later batch. Without a credit policy
+   * the invoice waits in `settling` and the sweep finishes it once the batch
+   * lands. With one, the gate reserves credit — atomically, within its limits —
+   * and serves the caller now.
+   */
+  private async onPending(
+    seq: number,
+    quote: Quote,
+    request: TReq,
+    idempotencyKey: string,
+  ): Promise<RedeemResult<TRes>> {
+    const wait = (why: string) =>
+      new LatchError("settlement_failed", why, {
+        retryable: true,
+        detail: { invoiceId: quote.invoiceId },
+      });
+
+    if (!this.credit) throw wait("Settlement pending in a batch; retry once it lands");
+
+    const reserved = await this.d.journal.reserveCredit({
+      invoiceId: quote.invoiceId,
+      payer: quote.payer,
+      amountMicros: quote.amountMicros,
+      totalLimitMicros: this.credit.maxOutstandingMicros,
+      perPayerLimitMicros: this.credit.maxPerPayerMicros,
+    });
+    // Over the limit is not an error. The gate falls back to waiting, which is
+    // always safe; the sweep delivers once the batch lands.
+    if (!reserved) throw wait("Settlement pending and the credit limit is reached; retry once it lands");
+
+    // Write-ahead, as everywhere: the credit decision is journaled before any
+    // compute is spent against it.
+    const next = await this.advance(seq, quote, "credited", {
+      creditMicros: quote.amountMicros,
+      idempotencyKey,
+    });
+    return this.deliver(next, quote, request, idempotencyKey, "");
+  }
+
+  /** Producing on credit: credited, and not since upgraded to a final settlement. */
+  private onCredit(entries: readonly JournalEntry[]): boolean {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const s = entries[i]?.state;
+      if (s === "settled") return false;
+      if (s === "credited") return true;
     }
-    if (state === "stuck") {
-      throw new LatchError("needs_operator", "This invoice needs operator review");
+    return false;
+  }
+
+  /**
+   * Production failed. On the strict path the money has moved, so refund it.
+   * On credit nothing has moved yet: wait for the batch to say whether there
+   * is anything to return.
+   */
+  private async failProduction(
+    from: number,
+    quote: Quote,
+    idempotencyKey: string,
+    reference: string,
+    credit: boolean,
+    evidence: Record<string, unknown>,
+  ): Promise<State> {
+    if (credit) {
+      const next = await this.advance(from, quote, "abandoning", evidence);
+      return this.resolveAbandon(next, quote, idempotencyKey);
     }
-    throw new LatchError("invoice_not_payable", "This invoice is closed");
+    const next = await this.advance(from, quote, "refunding", evidence);
+    return this.finishRefund(next, quote, idempotencyKey, reference);
+  }
+
+  /** A good went out on credit. Settle the books once the batch decides. */
+  private async resolveCredit(seq: number, quote: Quote, idempotencyKey: string): Promise<State> {
+    const status = await this.statusOrPending(idempotencyKey);
+    if (status.state === "pending") return "fronted";
+
+    const durable = await this.d.journal.getResult(idempotencyKey);
+    const resultHash = durable ? hashRequest(durable.payload) : undefined;
+
+    if (status.state === "settled") {
+      await this.advance(seq, quote, "delivered", {
+        reference: status.reference,
+        resultHash,
+        settledAfterDelivery: true,
+      });
+      await this.d.journal.releaseCredit(quote.invoiceId);
+      await this.writeReceipt(quote, "delivered", {
+        chargedMicros: quote.amountMicros,
+        resultHash,
+        settlementRef: status.reference,
+      });
+      return "delivered";
+    }
+
+    // The batch failed. The caller holds the good and was never charged; the
+    // seller absorbs it. This is the risk credit was extended against, and the
+    // limit is what bounded it. Recorded, receipted, never silent.
+    await this.advance(seq, quote, "written_off", {
+      reason: "batch_failed",
+      lossMicros: quote.amountMicros,
+    });
+    await this.d.journal.releaseCredit(quote.invoiceId);
+    await this.writeReceipt(quote, "written_off", { chargedMicros: 0, resultHash });
+    return "written_off";
+  }
+
+  /** Production failed on credit. Refund if the batch landed; void if it did not. */
+  private async resolveAbandon(seq: number, quote: Quote, idempotencyKey: string): Promise<State> {
+    const status = await this.statusOrPending(idempotencyKey);
+    if (status.state === "pending") return "abandoning";
+
+    if (status.state === "settled") {
+      // The batch landed after all, so there is now money to give back.
+      const next = await this.advance(seq, quote, "refunding", { reference: status.reference });
+      await this.d.journal.releaseCredit(quote.invoiceId);
+      return this.finishRefund(next, quote, idempotencyKey, status.reference);
+    }
+
+    await this.advance(seq, quote, "void", { reason: "batch_failed_before_delivery" });
+    await this.d.journal.releaseCredit(quote.invoiceId);
+    await this.writeReceipt(quote, "void", { chargedMicros: 0 });
+    return "void";
+  }
+
+  /**
+   * Ask the network, treating an unanswerable question as "still pending".
+   * Under credit that is the safe reading: it keeps waiting rather than voiding
+   * a payment or writing off a good on the strength of an error.
+   */
+  private async statusOrPending(
+    idempotencyKey: string,
+  ): Promise<Awaited<ReturnType<Facilitator["statusOf"]>>> {
+    try {
+      return await this.d.facilitator.statusOf(idempotencyKey);
+    } catch {
+      return { state: "pending" };
+    }
+  }
+
+  /**
+   * Release reservations whose invoice has left credit. Reservations are
+   * released as invoices resolve; this catches any a crash stranded between a
+   * transition and its release. A stranded reservation can only make the gate
+   * extend LESS credit, never more — it fails safe — and this heals it.
+   */
+  private async reconcileCredit(): Promise<void> {
+    for (const r of await this.d.journal.listCredit()) {
+      const snap = await this.d.journal.get(r.invoiceId);
+      if (snap && CREDIT_HOLDING.has(snap.state)) continue;
+      await this.d.journal.releaseCredit(r.invoiceId);
+    }
   }
 }
 

@@ -96,12 +96,76 @@ every single time:
 | `delivered` | charged exactly once | delivered |
 | `refunded` | net zero | not delivered |
 | `stuck` | held, flagged | not delivered |
+| `written_off` | never charged | delivered — *credit only, see below* |
+
+## Batched settlement
+
+Some rails settle cheaply by batching: a payment is accepted now and becomes
+final later. That forces a choice the strict rule never had to make — **wait
+for the batch, or serve the caller now and carry the risk until it lands.**
+
+**Waiting is the default, and needs no configuration.** A batched payment stays
+in `settling`, no compute is spent, and the sweep delivers once the batch lands.
+
+**Serving early is opt-in, and bounded:**
+
+```ts
+new Latch(
+  {
+    payTo,
+    credit: {
+      maxOutstandingMicros: 5_000_000, // the most you can lose if every batch fails
+      maxPerPayerMicros: 500_000,      // so one caller cannot absorb all of it
+    },
+  },
+  deps,
+);
+```
+
+```mermaid
+stateDiagram-v2
+    settling --> credited: batch accepted, credit reserved
+    credited --> producing: compute on credit
+    credited --> settled: batch landed first
+    credited --> void: batch failed first
+    producing --> fronted: delivered, batch pending
+    producing --> abandoning: failed, batch pending
+    fronted --> delivered: batch landed — paid
+    fronted --> written_off: batch failed — seller's loss
+    abandoning --> refunding: batch landed — give it back
+    abandoning --> void: batch failed — nothing moved
+```
+
+**What credit relaxes, precisely.** The promise has two halves. The caller's
+half — *never charged without the good or a refund* — is never relaxed, on any
+path. Credit gives up only the seller's half — *delivered implies paid* — and
+only up to a limit the seller chose. `written_off` is that loss, recorded and
+receipted, never silent.
+
+The rules that make it safe:
+
+- **Atomic limit.** The credit check and the reservation are one step, so two
+  concurrent sales can never both fit under the limit and together exceed it.
+  Past the limit the gate falls back to waiting — not an error.
+- **Write-ahead.** The credit decision is journaled as `credited` before any
+  compute is spent against it.
+- **Recovery takes no new risk.** Credit exists to serve a caller who is
+  waiting. After a crash nobody is, so a recovered `credited` invoice waits for
+  its batch instead of producing against it.
+- **Stranded reservations fail safe.** A crash between resolving an invoice and
+  releasing its credit leaves a reservation behind. That can only make the gate
+  extend *less* credit, never more, and the sweep heals it.
+- **One exception, pinned by a test.** `credited` is the only state that reaches
+  compute before money is final. A test asserts exactly that list, so the
+  exception cannot quietly widen.
+
+`gate.creditExposure()` reports what is currently outstanding.
 
 ## Try it
 
 ```bash
 npm run demo          # a narrated walkthrough in the terminal
-npm test              # 75 tests: crash injection, attacks, crypto vectors, Postgres
+npm test              # 90 tests: crash injection, attacks, credit, crypto, Postgres
 npm run build:console # rebuild the visual console at web/latch-console.html
 ```
 
@@ -166,7 +230,7 @@ never came back.
 
 ## What is proven
 
-`npm test` — 75 tests. No network, no server, no API keys: the Postgres suite
+`npm test` — 90 tests. No network, no server, no API keys: the Postgres suite
 runs a real PostgreSQL 18 in-process via PGlite.
 
 - **Crash injection at every journal write on the happy path**, both after the
@@ -188,7 +252,7 @@ runs a real PostgreSQL 18 in-process via PGlite.
 ## Conformance kit
 
 The port contracts used to be prose in doc comments, which meant nobody could
-check an adapter against them. They are now executable — 17 rules for the
+check an adapter against them. They are now executable — 22 rules for the
 `Journal`, 20 for the `Facilitator` — and each one states what breaking it
 costs in production:
 
@@ -281,6 +345,17 @@ issue. Reports of cases that break it are more useful to this project than
 stars are.
 
 ## Honest limits
+
+- The credit limit's atomicity on Postgres rests on a `FOR UPDATE` row lock.
+  The test suite runs PGlite, which executes transactions one at a time, so it
+  passes the concurrency check with or without the lock — it cannot
+  demonstrate the multi-connection race. Under real Postgres the lock is what
+  serialises credit decisions; that is standard `READ COMMITTED` behaviour, not
+  something this suite proves.
+- A caller retrying after a crash on a `credited` invoice waits for the batch
+  rather than being served on credit. Safe, but slower than it could be.
+- The sweep polls `statusOf` for every invoice delivered on credit until its
+  batch resolves. Size the sweep interval to your batch interval.
 
 - The in-memory journal is for tests and local development only.
 - Receipts use HMAC, so a buyer needs the shared secret to verify. Swap

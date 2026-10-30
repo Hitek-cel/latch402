@@ -350,6 +350,76 @@ export const JOURNAL_CHECKS: ConformanceCheck<Journal>[] = [
       );
     },
   },
+  // ── credit register, for batched settlement ──────────────────────────────
+  {
+    id: "J18",
+    title: "reserveCredit refuses a reservation that would exceed the total limit",
+    why: "The limit is the most the seller can lose if every pending batch fails. A reservation that slips past it is unbounded exposure the seller never agreed to.",
+    async run(j) {
+      const limits = { payer: "p", totalLimitMicros: 50_000 };
+      eq(await j.reserveCredit({ ...limits, invoiceId: "c1", amountMicros: 30_000 }), true, "first reservation");
+      eq(await j.reserveCredit({ ...limits, invoiceId: "c2", amountMicros: 30_000 }), false, "reservation past the limit");
+      eq(await j.reserveCredit({ ...limits, invoiceId: "c3", amountMicros: 20_000 }), true, "reservation exactly at the limit");
+      const held = await j.listCredit();
+      eq(held.reduce((n, r) => n + r.amountMicros, 0), 50_000, "total reserved");
+      ok(!held.some((r) => r.invoiceId === "c2"), "a refused reservation must reserve nothing");
+    },
+  },
+  {
+    id: "J19",
+    title: "reserveCredit enforces the per-payer limit independently",
+    why: "Without it one caller can absorb the seller's entire credit, and one bad batch from that caller is the whole loss.",
+    async run(j) {
+      const base = { totalLimitMicros: 1_000_000, perPayerLimitMicros: 40_000, amountMicros: 30_000 };
+      eq(await j.reserveCredit({ ...base, invoiceId: "a1", payer: "alice" }), true, "alice's first");
+      eq(await j.reserveCredit({ ...base, invoiceId: "a2", payer: "alice" }), false, "alice past her own limit");
+      eq(await j.reserveCredit({ ...base, invoiceId: "b1", payer: "bob" }), true, "bob is unaffected by alice");
+    },
+  },
+  {
+    id: "J20",
+    title: "reserveCredit is idempotent per invoice",
+    why: "Recovery may reserve again for an invoice that already holds credit. Counting it twice shrinks the seller's real limit; refusing it would strand a sale that is already covered.",
+    async run(j) {
+      const r = { invoiceId: "dup", payer: "p", amountMicros: 30_000, totalLimitMicros: 40_000 };
+      eq(await j.reserveCredit(r), true, "first reservation");
+      eq(await j.reserveCredit(r), true, "repeat reservation for the same invoice");
+      const held = await j.listCredit();
+      eq(held.length, 1, "reservations held");
+      eq(held[0]?.amountMicros, 30_000, "amount held — must not be doubled");
+    },
+  },
+  {
+    id: "J21",
+    title: "Concurrent reservations never jointly exceed the limit",
+    why: "The check-then-act race. Each sale alone fits; checked separately, all of them see room and together blow through the limit. The check and the reservation must be one step.",
+    async run(j) {
+      const results = await Promise.all(
+        ["r1", "r2", "r3", "r4"].map((invoiceId) =>
+          j.reserveCredit({ invoiceId, payer: "p", amountMicros: 30_000, totalLimitMicros: 70_000 }),
+        ),
+      );
+      eq(results.filter(Boolean).length, 2, "reservations granted (70,000 fits two of 30,000)");
+      const total = (await j.listCredit()).reduce((n, r) => n + r.amountMicros, 0);
+      ok(total <= 70_000, `concurrent reservations exceeded the limit: ${total}`);
+    },
+  },
+  {
+    id: "J22",
+    title: "releaseCredit frees exactly one reservation, and is idempotent",
+    why: "Releasing the wrong reservation, or too much, silently raises the seller's exposure. Releasing must also be safe to repeat, because recovery and the sweep both release.",
+    async run(j) {
+      const base = { payer: "p", amountMicros: 30_000, totalLimitMicros: 60_000 };
+      await j.reserveCredit({ ...base, invoiceId: "keep" });
+      await j.reserveCredit({ ...base, invoiceId: "drop" });
+      await j.releaseCredit("drop");
+      await j.releaseCredit("drop");
+      await j.releaseCredit("never_reserved");
+      const held = await j.listCredit();
+      eq(held.map((r) => r.invoiceId).join(","), "keep", "reservations after release");
+      eq(await j.reserveCredit({ ...base, invoiceId: "again" }), true, "released credit must be reusable");
+    },
+  },
 ];
 
 /** Run the whole journal contract. Returns a report; never throws for a failed check. */

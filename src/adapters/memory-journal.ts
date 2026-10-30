@@ -22,6 +22,7 @@ export function memoryJournal(): Journal & { snapshotAll(): InvoiceSnapshot[] } 
   const results = new Map<string, unknown>();
   const chain: SignedReceipt[] = [];
   let head = "";
+  const credit = new Map<string, { payer: string; amountMicros: number }>();
 
   function snapshotOf(rec: { quote: Quote; entries: JournalEntry[] }): InvoiceSnapshot {
     const last = rec.entries[rec.entries.length - 1];
@@ -111,6 +112,32 @@ export function memoryJournal(): Journal & { snapshotAll(): InvoiceSnapshot[] } 
 
     async readChain() {
       return [...chain];
+    },
+
+    async reserveCredit({ invoiceId, payer, amountMicros, totalLimitMicros, perPayerLimitMicros }) {
+      // No await between the check and the write, so the whole reservation is
+      // one uninterruptible step — the atomicity the port demands.
+      if (credit.has(invoiceId)) return true;
+      let total = 0;
+      let mine = 0;
+      for (const c of credit.values()) {
+        total += c.amountMicros;
+        if (c.payer === payer) mine += c.amountMicros;
+      }
+      if (total + amountMicros > totalLimitMicros) return false;
+      if (perPayerLimitMicros !== undefined && mine + amountMicros > perPayerLimitMicros) {
+        return false;
+      }
+      credit.set(invoiceId, { payer, amountMicros });
+      return true;
+    },
+
+    async releaseCredit(invoiceId) {
+      credit.delete(invoiceId);
+    },
+
+    async listCredit() {
+      return [...credit].map(([invoiceId, c]) => ({ invoiceId, ...c }));
     },
 
     snapshotAll() {

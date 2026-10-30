@@ -14,6 +14,8 @@ test("happy path: pay once, get the good once, receipt says so", async () => {
   assert.equal(out.result.answer, "brief for: overnight risk in APAC");
   assert.equal(out.replayed, false);
   assert.equal(await stateOf(w, quote.invoiceId), "delivered");
+  assert.equal(out.settlement, "final", "a strict-path sale settles finally");
+  assert.ok(out.receipt, "a final settlement always carries a receipt");
   assert.equal(out.receipt.receipt.chargedMicros, PRICE);
   assert.ok(verifyReceipt(out.receipt, hmacSigner(SECRET)));
   assertMoneyIsSound(w, { state: "delivered", delivered: true });

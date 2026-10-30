@@ -68,6 +68,28 @@ export type Journal = {
    */
   appendReceipt(build: (prev: string) => SignedReceipt): Promise<SignedReceipt>;
   readChain(): Promise<SignedReceipt[]>;
+
+  /**
+   * Credit for batched settlement. Reserve `amountMicros` for an invoice, but
+   * only if total outstanding credit stays within `totalLimitMicros` — and the
+   * payer's within `perPayerLimitMicros`, when given. Returns false, reserving
+   * nothing, if either would be exceeded.
+   *
+   * MUST be atomic: the check and the reservation are one step, or two
+   * concurrent sales both fit under the limit and together exceed it.
+   * MUST be idempotent per invoice: reserving twice holds one reservation.
+   */
+  reserveCredit(r: {
+    invoiceId: string;
+    payer: string;
+    amountMicros: number;
+    totalLimitMicros: number;
+    perPayerLimitMicros?: number;
+  }): Promise<boolean>;
+  /** Release an invoice's reservation. Idempotent: releasing nothing is fine. */
+  releaseCredit(invoiceId: string): Promise<void>;
+  /** Every outstanding reservation. Drives exposure reporting and reconciliation. */
+  listCredit(): Promise<{ invoiceId: string; payer: string; amountMicros: number }[]>;
 };
 
 export type VerifyOutcome =
@@ -75,7 +97,17 @@ export type VerifyOutcome =
   | { ok: false; reason: string };
 
 export type SettleOutcome =
-  | { ok: true; reference: string; amountMicros: number }
+  | {
+      ok: true;
+      reference: string;
+      amountMicros: number;
+      /**
+       * False when a batched rail accepted the payment for a later batch:
+       * nothing has moved yet, and statusOf reports "pending" until it does.
+       * Omitted or true means the money is final now.
+       */
+      final?: boolean;
+    }
   | { ok: false; reason: string; moved: false };
 
 /**

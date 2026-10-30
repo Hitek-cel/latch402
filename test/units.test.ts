@@ -66,13 +66,15 @@ test("every state is reachable and every terminal state is a dead end", () => {
   }
 });
 
-test("the good is never produced from a state where money has not moved", () => {
-  // "producing" is reachable from "settled", and from itself: recovery
-  // re-entering a crashed attempt. Both are post-charge states, so the
-  // invariant holds; no path reaches production before the money moved.
+test("compute is reachable only after the money moved — or on explicit credit", () => {
+  // The strict rule: production follows a final settlement. The one exception
+  // is `credited` — reached only when a batched rail accepted the payment AND
+  // the seller configured a credit policy AND a reservation fit the limit.
+  // Pinning the exact list means the exception cannot quietly widen.
   const sources = STATES.filter((s) => canTransition(s, "producing"));
-  assert.deepEqual(sources, ["settled", "producing"]);
-  for (const s of sources) assert.equal(isCharged(s), true);
+  assert.deepEqual(sources, ["settled", "producing", "credited"]);
+  const uncharged = sources.filter((s) => !isCharged(s));
+  assert.deepEqual(uncharged, ["credited"], "credited must be the only pre-charge path to compute");
 });
 
 test("closing states carry the right money position", () => {
@@ -80,6 +82,16 @@ test("closing states carry the right money position", () => {
   assert.equal(isCharged("refunded"), false);
   assert.equal(isCharged("delivered"), true);
   assert.equal(isCharged("stuck"), true);
+  // Delivered on credit, batch failed: the caller was never charged.
+  assert.equal(isCharged("written_off"), false);
+  for (const s of ["credited", "fronted", "abandoning"] as const) {
+    assert.equal(isCharged(s), false, `${s} holds no settled money`);
+  }
+});
+
+test("only a credit path can end in written_off", () => {
+  const into = STATES.filter((s) => canTransition(s, "written_off"));
+  assert.deepEqual(into, ["fronted"], "written_off must be reachable only from a delivery on credit");
 });
 
 test("failures map to sane HTTP codes without string matching", () => {

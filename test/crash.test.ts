@@ -188,6 +188,7 @@ test("the receipt attests the result the caller actually gets, across a re-produ
   assert.equal(out.result.answer, "result-of-attempt-1", "first durable write must win");
 
   const { hashRequest } = await import("../src/ids.ts");
+  assert.ok(out.receipt, "a delivered invoice must carry a receipt");
   assert.equal(
     out.receipt.receipt.resultHash,
     hashRequest(out.result),

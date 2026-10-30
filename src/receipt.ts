@@ -15,7 +15,7 @@ import type { State } from "./states.ts";
 export type Receipt = {
   version: 1;
   invoiceId: string;
-  outcome: Extract<State, "delivered" | "void" | "refunded" | "stuck">;
+  outcome: Extract<State, "delivered" | "void" | "refunded" | "stuck" | "written_off">;
   payer: string;
   payTo: string;
   /** What actually moved. Zero for void, and for refunded (it came back). */

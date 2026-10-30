@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Latch } from "../src/gate.ts";
+import { Latch, type CreditPolicy } from "../src/gate.ts";
 import { memoryJournal } from "../src/adapters/memory-journal.ts";
 import { ledgerFacilitator, makeProof, type LedgerFacilitator } from "../src/adapters/ledger-facilitator.ts";
 import { hmacSigner } from "../src/receipt.ts";
@@ -109,6 +109,7 @@ export function makeWorld(
     quoteTtlMs?: number;
     maxProduceAttempts?: number;
     payerBalance?: number;
+    credit?: CreditPolicy;
   } = {},
 ): World {
   const journal = memoryJournal();
@@ -124,6 +125,7 @@ export function makeWorld(
         quoteTtlMs: config.quoteTtlMs ?? 120_000,
         produceTimeoutMs: config.produceTimeoutMs ?? 50,
         maxProduceAttempts: config.maxProduceAttempts ?? 2,
+        credit: config.credit,
       },
       { journal: j, facilitator, producer: producer.producer, signer, clock },
     );
@@ -174,6 +176,13 @@ export function assertMoneyIsSound(world: World, expect: { state: State; deliver
       assert.equal(payer, START_BALANCE, `${expect.state} but payer is out of pocket`);
       assert.equal(seller, 0, `${expect.state} but seller kept money`);
       assert.equal(expect.delivered, false, "closed unpaid but the good was handed over");
+      break;
+    case "written_off":
+      // Delivered on credit and the batch failed: the caller holds the good
+      // and was never charged. The seller absorbed it, within its credit limit.
+      assert.equal(payer, START_BALANCE, "written off, yet the payer was charged");
+      assert.equal(seller, 0, "written off, yet the seller was paid");
+      assert.equal(expect.delivered, true, "written_off means the good was delivered");
       break;
     case "stuck":
       // Money is held, deliberately and visibly, awaiting an operator.

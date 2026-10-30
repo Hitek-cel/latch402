@@ -225,10 +225,14 @@ test("postgres: concurrent receipts extend one chain instead of forking it", asy
 
 // ── the real test: the whole gate, over Postgres ──────────────────────────
 
-function gateOver(journal: Journal, facilitator: ReturnType<typeof ledgerFacilitator>, opts: { fail?: boolean } = {}) {
+function gateOver(
+  journal: Journal,
+  facilitator: ReturnType<typeof ledgerFacilitator>,
+  opts: { fail?: boolean; credit?: { maxOutstandingMicros: number } } = {},
+) {
   let produced = 0;
   const gate = new Latch<{ prompt: string }, { answer: string }>(
-    { payTo: SELLER, produceTimeoutMs: 2_000 },
+    { payTo: SELLER, produceTimeoutMs: 2_000, credit: opts.credit },
     {
       journal,
       facilitator,
@@ -355,4 +359,51 @@ test("postgres: operators can list invoices stuck holding money", async () => {
 
   assert.equal((await journal.get(quote.invoiceId))?.state, "stuck");
   assert.deepEqual(await listStuck(sql), [quote.invoiceId], "a stuck invoice must be findable");
+});
+
+test("postgres end-to-end: credit fronts the good, then the batch settles it", async () => {
+  const { journal } = await freshDb();
+  const facilitator = ledgerFacilitator({ [BUYER]: START });
+  facilitator.faults.batched = true;
+  const { gate } = gateOver(journal, facilitator, { credit: { maxOutstandingMicros: 100_000 } });
+
+  const { quote } = await gate.quote({
+    payer: BUYER, sku: "brief", amountMicros: PRICE, request: { prompt: "risk" },
+  });
+  const out = await gate.redeem({
+    invoiceId: quote.invoiceId, payer: BUYER, proof: makeProof(quote), request: { prompt: "risk" },
+  });
+
+  assert.equal(out.settlement, "pending");
+  assert.equal((await journal.get(quote.invoiceId))?.state, "fronted");
+  assert.deepEqual(await gate.creditExposure(), { totalMicros: PRICE, invoices: 1 });
+  assert.equal(facilitator.balanceOf(BUYER), START, "nothing moved yet");
+
+  facilitator.finalizePending();
+  assert.equal(await gateOver(journal, facilitator).gate.recover(quote.invoiceId), "delivered");
+  assert.equal(facilitator.balanceOf(BUYER), START - PRICE);
+  assert.equal(facilitator.balanceOf(SELLER), PRICE);
+  assert.deepEqual(await gate.creditExposure(), { totalMicros: 0, invoices: 0 });
+});
+
+test("postgres end-to-end: a failed batch after delivery is written off, never charged", async () => {
+  const { journal } = await freshDb();
+  const facilitator = ledgerFacilitator({ [BUYER]: START });
+  facilitator.faults.batched = true;
+  const { gate } = gateOver(journal, facilitator, { credit: { maxOutstandingMicros: 100_000 } });
+
+  const { quote } = await gate.quote({
+    payer: BUYER, sku: "brief", amountMicros: PRICE, request: { prompt: "risk" },
+  });
+  await gate.redeem({
+    invoiceId: quote.invoiceId, payer: BUYER, proof: makeProof(quote), request: { prompt: "risk" },
+  });
+
+  facilitator.failPendingBatch();
+  assert.equal(await gate.recover(quote.invoiceId), "written_off");
+  assert.equal(facilitator.balanceOf(BUYER), START, "the caller was charged for a failed batch");
+  assert.equal(facilitator.balanceOf(SELLER), 0);
+  const last = (await gate.chain()).at(-1);
+  assert.equal(last?.receipt.outcome, "written_off");
+  assert.equal(auditChain(await gate.chain(), hmacSigner(SECRET)), -1, "receipt chain broken");
 });

@@ -1,6 +1,6 @@
 {
   "name": "latch402",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A settlement-safe gate for paid HTTP: charge if and only if delivered.",
   "type": "module",
   "exports": {
