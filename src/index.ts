@@ -58,15 +58,23 @@ export { postgresJournal, migrate, listStuck, SCHEMA } from "./adapters/postgres
 export type { SqlClient, SqlExecutor } from "./adapters/postgres-journal.ts";
 
 export {
+  SkipCheck,
+  runChecks,
+  formatReport,
   JOURNAL_CHECKS,
   runJournalConformance,
-  formatReport,
-} from "./conformance/journal.ts";
+  FACILITATOR_CHECKS,
+  runFacilitatorConformance,
+} from "./conformance/index.ts";
 export type {
-  JournalHarness,
-  ConformanceCheck,
+  CheckStatus,
   CheckResult,
+  ConformanceCheck,
   ConformanceReport,
-} from "./conformance/journal.ts";
+  Harness,
+  JournalHarness,
+  FacilitatorFixture,
+  FacilitatorHarness,
+} from "./conformance/index.ts";
 export { ledgerFacilitator, makeProof, parseProof } from "./adapters/ledger-facilitator.ts";
 export type { LedgerFacilitator, LedgerFaults } from "./adapters/ledger-facilitator.ts";

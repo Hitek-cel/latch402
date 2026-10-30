@@ -101,7 +101,7 @@ every single time:
 
 ```bash
 npm run demo          # a narrated walkthrough in the terminal
-npm test              # 71 tests: crash injection, attacks, crypto vectors, Postgres
+npm test              # 75 tests: crash injection, attacks, crypto vectors, Postgres
 npm run build:console # rebuild the visual console at web/latch-console.html
 ```
 
@@ -166,7 +166,7 @@ never came back.
 
 ## What is proven
 
-`npm test` — 71 tests. No network, no server, no API keys: the Postgres suite
+`npm test` — 75 tests. No network, no server, no API keys: the Postgres suite
 runs a real PostgreSQL 18 in-process via PGlite.
 
 - **Crash injection at every journal write on the happy path**, both after the
@@ -188,36 +188,59 @@ runs a real PostgreSQL 18 in-process via PGlite.
 ## Conformance kit
 
 The port contracts used to be prose in doc comments, which meant nobody could
-check an adapter against them — and two adapters in this repo silently drifted
-apart on `putResult`, which let a signed receipt attest a result the caller
-never received.
-
-The contracts are now executable. Run them against any journal you write:
+check an adapter against them. They are now executable — 17 rules for the
+`Journal`, 20 for the `Facilitator` — and each one states what breaking it
+costs in production:
 
 ```ts
-import { runJournalConformance, formatReport } from "latch402/conformance";
+import {
+  runJournalConformance,
+  runFacilitatorConformance,
+  formatReport,
+} from "latch402/conformance";
 
 const report = await runJournalConformance({ create: () => myJournal() });
 console.log(formatReport(report, "myJournal"));
 ```
 
-17 rules. Each one is there because breaking it loses money or corrupts
-evidence, and a failure says which:
-
 ```
-  FAIL  J11  putResult is FIRST-write-wins
-          a stored result must never be overwritten (expected first, got second)
-          why it matters: The gate hashes the durably stored result into the
-          signed receipt. If a later attempt can overwrite an earlier one, the
-          receipt attests a result the caller never received.
+  FAIL  F20  a settlement is refunded at most once, whatever the key
+          total refunded to the payer under two different refund keys
+          (expected 24000, got 48000)
+          why it matters: Refund idempotency keyed only on the refund key lets
+          two different keys refund the same settlement twice.
 ```
 
 No test framework, no assertion library — it runs anywhere the library does,
-and returns a report rather than throwing, so you see every violation at once.
+and returns a report rather than throwing, so every violation surfaces at once.
 
-It earns its place: building it found a real drift between the two shipped
-adapters (`J16` — one reported a missing invoice as a *retryable* conflict,
-telling callers to retry forever something that could never succeed).
+**For a facilitator, your fixture issues the proofs.** The kit cannot fabricate
+a signed authorisation for someone else's payment network, so you supply
+`issue()` — for a real network, that is where a funded test wallet signs. Supply
+`balanceOf()` too and the money-movement checks run; without it they are
+reported as **skipped, never as passed**. The kit will not hand out a clean bill
+of health it did not earn.
+
+**What it cannot check.** Anything that needs a fault injected into the network:
+a dropped response, a settle that lands after reporting failure, a settlement
+still in flight when `statusOf` is asked. In particular it cannot verify that
+`statusOf` only says "unknown" when nothing can still land later — that has to
+come from the network's own guarantees. The gate-level crash and attack suites
+cover those paths against the reference ledger.
+
+**It earns its place.** Building it found real bugs in both kinds of adapter:
+
+- `J16` — the Postgres journal reported a missing invoice as a *retryable*
+  conflict, telling callers to retry forever something that could never succeed.
+- `F10`/`F11` — the reference ledger's `settle` never looked at the proof. An
+  authorisation issued for one invoice settled another.
+- `F18`/`F19` — its `refund` never checked the reference, and paid out against
+  a settlement that never happened.
+- `F20` — one settlement could be refunded twice under different refund keys,
+  paying the buyer back double.
+
+The kit is self-checking: tests run it against deliberately broken adapters and
+assert it reports exactly the known violation.
 
 ## Ports you must implement for production
 

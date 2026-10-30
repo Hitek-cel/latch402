@@ -5,7 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./conformance": "./src/conformance/journal.ts"
+    "./conformance": "./src/conformance/index.ts"
   },
   "scripts": {
     "test": "node --test test/*.test.ts",

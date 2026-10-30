@@ -1,6 +1,15 @@
 import { JournalConflictError } from "../errors.ts";
 import { hashReceipt, type SignedReceipt } from "../receipt.ts";
 import type { Journal, Quote } from "../ports.ts";
+import {
+  eq,
+  ok,
+  runChecks,
+  throws,
+  type ConformanceCheck,
+  type ConformanceReport,
+  type Harness,
+} from "./core.ts";
 
 /**
  * The Journal contract, made executable.
@@ -20,65 +29,8 @@ import type { Journal, Quote } from "../ports.ts";
  * it runs anywhere the library does.
  */
 
-export type JournalHarness = {
-  /** Must return a FRESH, EMPTY journal. Called once per check. */
-  create(): Promise<Journal>;
-  /** Optional teardown, called after each check even if it failed. */
-  dispose?(journal: Journal): Promise<void>;
-};
-
-export type ConformanceCheck = {
-  /** Stable id, so a failure report can be cited. */
-  id: string;
-  title: string;
-  /** What goes wrong in production if an adapter fails this. */
-  why: string;
-  run(journal: Journal): Promise<void>;
-};
-
-export type CheckResult = {
-  id: string;
-  title: string;
-  why: string;
-  passed: boolean;
-  error?: string;
-};
-
-export type ConformanceReport = {
-  passed: boolean;
-  total: number;
-  failed: number;
-  results: CheckResult[];
-};
-
-// ── tiny assertions, so the kit needs no test framework ────────────────────
-
-function fail(message: string): never {
-  throw new Error(message);
-}
-
-function eq(actual: unknown, expected: unknown, message: string): void {
-  if (actual !== expected) fail(`${message} (expected ${String(expected)}, got ${String(actual)})`);
-}
-
-/** An assertion signature, so a passing check also narrows the type. */
-function ok(value: unknown, message: string): asserts value {
-  if (!value) fail(message);
-}
-
-async function throws(
-  fn: () => Promise<unknown>,
-  predicate: (err: unknown) => boolean,
-  message: string,
-): Promise<void> {
-  try {
-    await fn();
-  } catch (err) {
-    if (predicate(err)) return;
-    fail(`${message} — threw the wrong error: ${String(err)}`);
-  }
-  fail(`${message} — nothing was thrown`);
-}
+/** A fresh, empty journal per check. */
+export type JournalHarness = Harness<Journal>;
 
 let counter = 0;
 function quote(overrides: Partial<Quote> = {}): Quote {
@@ -124,7 +76,7 @@ function receipt(invoiceId: string, prev: string): SignedReceipt {
 
 // ── the contract ───────────────────────────────────────────────────────────
 
-export const JOURNAL_CHECKS: ConformanceCheck[] = [
+export const JOURNAL_CHECKS: ConformanceCheck<Journal>[] = [
   {
     id: "J1",
     title: "An opened invoice starts at seq 0 in state `quoted`",
@@ -400,65 +352,10 @@ export const JOURNAL_CHECKS: ConformanceCheck[] = [
   },
 ];
 
-/**
- * Run the whole contract against an adapter.
- *
- * Never throws for a failed check — it returns a report, so a caller can print
- * every violation at once rather than discovering them one at a time.
- */
-export async function runJournalConformance(
+/** Run the whole journal contract. Returns a report; never throws for a failed check. */
+export function runJournalConformance(
   harness: JournalHarness,
   only?: readonly string[],
 ): Promise<ConformanceReport> {
-  const checks = only ? JOURNAL_CHECKS.filter((c) => only.includes(c.id)) : JOURNAL_CHECKS;
-  const results: CheckResult[] = [];
-
-  for (const check of checks) {
-    let journal: Journal | undefined;
-    try {
-      journal = await harness.create();
-      await check.run(journal);
-      results.push({ id: check.id, title: check.title, why: check.why, passed: true });
-    } catch (err) {
-      results.push({
-        id: check.id,
-        title: check.title,
-        why: check.why,
-        passed: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      if (journal && harness.dispose) {
-        try {
-          await harness.dispose(journal);
-        } catch {
-          // Teardown failure must not mask the check's own result.
-        }
-      }
-    }
-  }
-
-  const failed = results.filter((r) => !r.passed).length;
-  return { passed: failed === 0, total: results.length, failed, results };
-}
-
-/** Human-readable report. Failures explain what they would cost in production. */
-export function formatReport(report: ConformanceReport, name = "journal"): string {
-  const lines: string[] = [];
-  lines.push(`Latch journal conformance — ${name}`);
-  lines.push("");
-  for (const r of report.results) {
-    lines.push(`  ${r.passed ? "PASS" : "FAIL"}  ${r.id}  ${r.title}`);
-    if (!r.passed) {
-      lines.push(`          ${r.error}`);
-      lines.push(`          why it matters: ${r.why}`);
-    }
-  }
-  lines.push("");
-  lines.push(
-    report.passed
-      ? `  ${report.total}/${report.total} rules upheld.`
-      : `  ${report.failed} of ${report.total} rules violated.`,
-  );
-  return lines.join("\n");
+  return runChecks(JOURNAL_CHECKS, harness, only);
 }

@@ -1265,6 +1265,13 @@ function ledgerFacilitator(initial = {}) {
   const faults = {};
   let counter = 0;
   const get = (a) => balances.get(a) ?? 0;
+  const mismatch = (proof, q) => {
+    if (!proof) return "malformed_proof";
+    if (proof.invoiceId !== q.invoiceId) return "invoice_mismatch";
+    if (proof.payer !== q.payer) return "payer_mismatch";
+    if (proof.nonce !== q.nonce) return "nonce_mismatch";
+    return null;
+  };
   const move = (from, to, micros) => {
     balances.set(from, subMicros(get(from), micros));
     balances.set(to, addMicros(get(to), micros));
@@ -1296,13 +1303,17 @@ function ledgerFacilitator(initial = {}) {
     async verify(proof, expected) {
       if (faults.verifyThrows) throw new Error("facilitator unreachable");
       const p = parseProof(proof);
-      if (!p) return { ok: false, reason: "malformed_proof" };
-      if (p.invoiceId !== expected.invoiceId) return { ok: false, reason: "invoice_mismatch" };
-      if (p.payer !== expected.payer) return { ok: false, reason: "payer_mismatch" };
-      if (p.nonce !== expected.nonce) return { ok: false, reason: "nonce_mismatch" };
+      const bad = mismatch(p, expected);
+      if (bad || !p) return { ok: false, reason: bad ?? "malformed_proof" };
       return { ok: true, payer: p.payer, amountMicros: p.amountMicros, nonce: p.nonce };
     },
-    async settle({ idempotencyKey, quote }) {
+    async settle({ idempotencyKey, quote, proof }) {
+      const p = parseProof(proof);
+      const bad = mismatch(p, quote);
+      if (bad || !p) return { ok: false, reason: bad ?? "malformed_proof", moved: false };
+      if (p.amountMicros !== quote.amountMicros) {
+        return { ok: false, reason: "amount_not_authorised", moved: false };
+      }
       const existing = settlements.get(idempotencyKey);
       if (existing) {
         return { ok: true, reference: existing.reference, amountMicros: existing.amountMicros };
@@ -1316,6 +1327,7 @@ function ledgerFacilitator(initial = {}) {
       if (faults.settlePending) {
         settlements.set(idempotencyKey, {
           reference,
+          invoiceId: quote.invoiceId,
           amountMicros: quote.amountMicros,
           final: false,
           payer: quote.payer,
@@ -1326,6 +1338,7 @@ function ledgerFacilitator(initial = {}) {
       move(quote.payer, quote.payTo, quote.amountMicros);
       settlements.set(idempotencyKey, {
         reference,
+        invoiceId: quote.invoiceId,
         amountMicros: quote.amountMicros,
         final: true,
         payer: quote.payer,
@@ -1342,15 +1355,31 @@ function ledgerFacilitator(initial = {}) {
       if (!s.final) return { state: "pending" };
       return { state: "settled", reference: s.reference, amountMicros: s.amountMicros };
     },
-    async refund({ idempotencyKey, quote }) {
+    async refund({ idempotencyKey, quote, reference: settlementRef }) {
       const already = refunds.get(idempotencyKey);
       if (already) return { ok: true, reference: already };
+      let target;
+      for (const s of settlements.values()) {
+        if (s.reference === settlementRef) {
+          target = s;
+          break;
+        }
+      }
+      if (!target || !target.final) return { ok: false, reason: "unknown_settlement" };
+      if (target.invoiceId !== quote.invoiceId) {
+        return { ok: false, reason: "settlement_not_for_this_quote" };
+      }
+      if (target.refundedBy) {
+        refunds.set(idempotencyKey, target.refundedBy);
+        return { ok: true, reference: target.refundedBy };
+      }
       if (faults.refundFails) return { ok: false, reason: "refund_rail_down" };
-      if (get(quote.payTo) < quote.amountMicros) {
+      if (get(target.payTo) < target.amountMicros) {
         return { ok: false, reason: "operator_balance_too_low" };
       }
-      move(quote.payTo, quote.payer, quote.amountMicros);
+      move(target.payTo, target.payer, target.amountMicros);
       const reference = `rfd_${++counter}`;
+      target.refundedBy = reference;
       refunds.set(idempotencyKey, reference);
       return { ok: true, reference };
     }

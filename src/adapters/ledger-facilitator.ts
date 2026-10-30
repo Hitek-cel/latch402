@@ -68,15 +68,31 @@ export function makeProof(quote: Quote, overrides: Partial<Proof> = {}): string 
 
 export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerFacilitator {
   const balances = new Map<string, number>(Object.entries(initial));
-  const settlements = new Map<
-    string,
-    { reference: string; amountMicros: number; final: boolean; payer: string; payTo: string }
-  >();
+  type Settlement = {
+    reference: string;
+    invoiceId: string;
+    amountMicros: number;
+    final: boolean;
+    payer: string;
+    payTo: string;
+    /** Set once refunded, so a settlement can never be reversed twice. */
+    refundedBy?: string;
+  };
+  const settlements = new Map<string, Settlement>();
   const refunds = new Map<string, string>();
   const faults: LedgerFaults = {};
   let counter = 0;
 
   const get = (a: string) => balances.get(a) ?? 0;
+
+  /** Why a proof does not authorise a quote, or null if it does. */
+  const mismatch = (proof: ReturnType<typeof parseProof>, q: Quote): string | null => {
+    if (!proof) return "malformed_proof";
+    if (proof.invoiceId !== q.invoiceId) return "invoice_mismatch";
+    if (proof.payer !== q.payer) return "payer_mismatch";
+    if (proof.nonce !== q.nonce) return "nonce_mismatch";
+    return null;
+  };
   const move = (from: string, to: string, micros: number) => {
     balances.set(from, subMicros(get(from), micros));
     balances.set(to, addMicros(get(to), micros));
@@ -111,14 +127,25 @@ export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerF
     async verify(proof, expected): Promise<VerifyOutcome> {
       if (faults.verifyThrows) throw new Error("facilitator unreachable");
       const p = parseProof(proof);
-      if (!p) return { ok: false, reason: "malformed_proof" };
-      if (p.invoiceId !== expected.invoiceId) return { ok: false, reason: "invoice_mismatch" };
-      if (p.payer !== expected.payer) return { ok: false, reason: "payer_mismatch" };
-      if (p.nonce !== expected.nonce) return { ok: false, reason: "nonce_mismatch" };
+      const bad = mismatch(p, expected);
+      if (bad || !p) return { ok: false, reason: bad ?? "malformed_proof" };
+      // Amount is reported, not enforced, here: the gate compares it to the
+      // quote and reports underpayment itself. settle() enforces it.
       return { ok: true, payer: p.payer, amountMicros: p.amountMicros, nonce: p.nonce };
     },
 
-    async settle({ idempotencyKey, quote }): Promise<SettleOutcome> {
+    async settle({ idempotencyKey, quote, proof }): Promise<SettleOutcome> {
+      // A real network can only move funds the signed authorisation covers, so
+      // the reference ledger must refuse anything else — including when a gate
+      // bug skips verify. Exact amount: an authorisation for less never pays
+      // for more.
+      const p = parseProof(proof);
+      const bad = mismatch(p, quote);
+      if (bad || !p) return { ok: false, reason: bad ?? "malformed_proof", moved: false };
+      if (p.amountMicros !== quote.amountMicros) {
+        return { ok: false, reason: "amount_not_authorised", moved: false };
+      }
+
       const existing = settlements.get(idempotencyKey);
       if (existing) {
         // Idempotent: replaying the same key never moves money twice.
@@ -134,6 +161,7 @@ export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerF
       if (faults.settlePending) {
         settlements.set(idempotencyKey, {
           reference,
+          invoiceId: quote.invoiceId,
           amountMicros: quote.amountMicros,
           final: false,
           payer: quote.payer,
@@ -145,6 +173,7 @@ export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerF
       move(quote.payer, quote.payTo, quote.amountMicros);
       settlements.set(idempotencyKey, {
         reference,
+        invoiceId: quote.invoiceId,
         amountMicros: quote.amountMicros,
         final: true,
         payer: quote.payer,
@@ -165,15 +194,40 @@ export function ledgerFacilitator(initial: Record<string, number> = {}): LedgerF
       return { state: "settled", reference: s.reference, amountMicros: s.amountMicros };
     },
 
-    async refund({ idempotencyKey, quote }) {
+    async refund({ idempotencyKey, quote, reference: settlementRef }) {
       const already = refunds.get(idempotencyKey);
       if (already) return { ok: true, reference: already };
+
+      // A refund reverses one specific settlement. Without this lookup the
+      // ledger paid out against any reference string at all.
+      let target: Settlement | undefined;
+      for (const s of settlements.values()) {
+        if (s.reference === settlementRef) {
+          target = s;
+          break;
+        }
+      }
+      if (!target || !target.final) return { ok: false, reason: "unknown_settlement" };
+      if (target.invoiceId !== quote.invoiceId) {
+        return { ok: false, reason: "settlement_not_for_this_quote" };
+      }
+
+      // Bound to the settlement, not the refund key: a second key against an
+      // already-reversed settlement gets the original refund back and moves
+      // nothing. Keying only on the refund key allowed a double refund.
+      if (target.refundedBy) {
+        refunds.set(idempotencyKey, target.refundedBy);
+        return { ok: true, reference: target.refundedBy };
+      }
+
       if (faults.refundFails) return { ok: false, reason: "refund_rail_down" };
-      if (get(quote.payTo) < quote.amountMicros) {
+      // Reverse what the settlement actually moved, between its own parties.
+      if (get(target.payTo) < target.amountMicros) {
         return { ok: false, reason: "operator_balance_too_low" };
       }
-      move(quote.payTo, quote.payer, quote.amountMicros);
+      move(target.payTo, target.payer, target.amountMicros);
       const reference = `rfd_${++counter}`;
+      target.refundedBy = reference;
       refunds.set(idempotencyKey, reference);
       return { ok: true, reference };
     },
