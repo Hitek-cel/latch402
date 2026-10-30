@@ -56,5 +56,17 @@ export type {
 export { memoryJournal } from "./adapters/memory-journal.ts";
 export { postgresJournal, migrate, listStuck, SCHEMA } from "./adapters/postgres-journal.ts";
 export type { SqlClient, SqlExecutor } from "./adapters/postgres-journal.ts";
+
+export {
+  JOURNAL_CHECKS,
+  runJournalConformance,
+  formatReport,
+} from "./conformance/journal.ts";
+export type {
+  JournalHarness,
+  ConformanceCheck,
+  CheckResult,
+  ConformanceReport,
+} from "./conformance/journal.ts";
 export { ledgerFacilitator, makeProof, parseProof } from "./adapters/ledger-facilitator.ts";
 export type { LedgerFacilitator, LedgerFaults } from "./adapters/ledger-facilitator.ts";

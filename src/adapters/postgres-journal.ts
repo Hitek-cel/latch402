@@ -173,6 +173,19 @@ export function postgresJournal(sql: SqlClient): Journal {
         throw err;
       }
       if (res.rowCount === 0) {
+        // Zero rows means the guard failed, but for two very different reasons.
+        // A lost race is retryable; an invoice that does not exist never will
+        // be, and reporting it as a conflict tells the caller to retry forever.
+        // rows.length, not rowCount: for a SELECT, drivers vary on what
+        // rowCount means (several report 0 affected rows), and a wrong answer
+        // here would misreport a live invoice as missing.
+        const exists = await sql.query(
+          `select 1 from latch_invoice where invoice_id = $1`,
+          [entry.invoiceId],
+        );
+        if (exists.rows.length === 0) {
+          throw new Error(`Unknown invoice: ${entry.invoiceId}`);
+        }
         throw new JournalConflictError(
           `Journal conflict on ${entry.invoiceId}: expected seq ${expectedSeq}`,
         );

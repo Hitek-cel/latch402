@@ -4,7 +4,8 @@
   "description": "A settlement-safe gate for paid HTTP: charge if and only if delivered.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./conformance": "./src/conformance/journal.ts"
   },
   "scripts": {
     "test": "node --test test/*.test.ts",
