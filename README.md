@@ -1,70 +1,297 @@
 # Latch
 
-**A settlement-safe gate for paid HTTP.** One promise, enforced:
+**Settlement safety for x402.** One promise, enforced:
 
-> A caller is charged **if and only if** it received the good — or was refunded.
+> A caller is charged **if and only if** it received the good.
 
 x402 is finished infrastructure. Cloudflare and AWS ship it at the edge, the
 Linux Foundation runs the standard, and Visa, Mastercard, Stripe, Google and
 Coinbase are members. Nobody needs another paywall.
 
 What is *not* finished is the join between "the money moved" and "the customer
-was served". Those are two different systems, and every gap between them is
-either theft or free goods.
+was served". The official SDK keeps a payment's state in process memory, which
+is enough until something goes wrong in between: a crash, a lost response, a
+settle that reports failure after it broadcast, three copies of one payment
+arriving at once. Latch makes that state durable, through the SDK's own
+lifecycle hooks.
 
-Published security research on x402 ([arXiv:2607.19545](https://arxiv.org/abs/2607.19545))
-reports that every facilitator it evaluated violated at least one of its eight
-security rules, and that all seven official reference server SDKs it examined
-lack rollback for post-verification side effects. Those findings are that
-paper's, not independent testing by this project. This is a small, hard library
-for exactly that seam.
+## Status
+
+**0.3.0. Not yet used in production by anyone, including its author.**
+
+- It plugs into the official SDK (`@x402/core` 2.30, tested with `@x402/hono`
+  and `@x402/fetch`). The official client pays an official server through it.
+- Every guarantee below is a test in this repository. The chain in those tests
+  is a fake; the facilitator's failures are injected.
+- The settlement oracle has been checked read-only against the real USDC
+  contract on Base. **Nothing here has been run against a live facilitator or
+  with real money yet.**
+- It covers one payment flow of one scheme. See [Limits](#limits).
+
+If you try it and it breaks, that report is worth more to this project than a
+star. [Open an issue.](https://github.com/Hitek-cel/latch402/issues)
+
+## Use it with the official SDK
+
+```bash
+npm install latch402
+```
+
+```ts
+import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { migrate, postgresJournal } from "latch402";
+import { eip3009Oracle, latchX402 } from "latch402/x402";
+
+await migrate(sql); // once at deploy; safe to re-run
+
+const server = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL }))
+  .register("eip155:8453", new ExactEvmScheme());
+
+const latch = latchX402(server, {
+  journal: postgresJournal(sql),
+  // Asks the token contract whether a payment landed. See "Never trust a failed settle".
+  oracle: eip3009Oracle({ rpcUrls: { "eip155:8453": BASE_RPC_URL } }),
+  onAlarm: (alarm) => console.error("latch", alarm),
+});
+
+app.use(
+  paymentMiddleware(
+    {
+      "POST /answer": {
+        accepts: { scheme: "exact", price: "$0.01", network: "eip155:8453", payTo: PAY_TO },
+        // Lets a caller collect a paid response again after a lost reply or a crash.
+        extensions: { ...latch.declare() },
+      },
+    },
+    server,
+  ),
+);
+
+// Finishes payments whose process died. Run it in every instance; it is safe to race.
+setInterval(() => latch.sweep().catch(console.error), 30_000);
+```
+
+That is the whole integration. Your route handlers do not change. `sql` is a
+two-method shape (`query`, `transaction`) that `pg`, `postgres.js` and PGlite
+each wrap in about ten lines, so Latch has **no runtime dependencies** and you
+keep your own driver. The hooks live on `x402ResourceServer`, so the Express
+and Next adapters get the same behaviour; the tests here drive Hono.
+
+## What changes
+
+Each row is a test in `test/x402.test.ts`, run against the real SDK packages.
+The middle column is what those same tests observe with Latch switched off.
+
+| What happens | SDK alone | With Latch |
+|---|---|---|
+| Three copies of one payment arrive together | the handler runs three times | it runs once; the others get `402 payment_in_progress` |
+| The settle moves money, then reports failure or times out | the caller is charged and gets a 402 | the chain is asked; the caller gets what it paid for |
+| The process dies after the money moved | charged, nothing delivered, no record | the next process finds it; a retry returns the stored response |
+| The process dies inside the handler | no record | the claim is closed; nothing was charged |
+| The caller retries the same paid request after a lost reply | rejected, the payment is spent | the stored response comes back; no second charge |
+| The caller signs again under the same `payment-identifier` | charged twice | answered from the store; the second signature never settles |
+| The database is down | — | the sale is refused before anything is charged |
+
+One test kills the server at **every journal write** of a payment, both just
+before and just after the write became durable, then restarts and checks the
+books: 48 cases, each asserting that the caller was charged exactly when the
+good is collectable, and never twice.
+
+## How it works on x402
+
+The SDK's default flow is *verify → run the handler → settle → release the
+response*. The handler runs before any money moves and its response is held
+back until the settle lands. So nothing ever needs refunding; what needs
+protecting is the record. Latch journals each step, write-ahead, and every
+write is a compare-and-set:
+
+```mermaid
+stateDiagram-v2
+    [*] --> quoted: verified, claimed
+    quoted --> producing: handler running
+    producing --> settling: response stored, settle requested
+    producing --> void: handler failed / process died
+    settling --> delivered: settled
+    settling --> settling: retry finishes an unlanded settle
+    settling --> void: expired unused
+    settling --> stuck: outcome unknowable
+    delivered --> [*]
+    void --> [*]
+    stuck --> [*]
+```
+
+**One claim per payment.** A payment is identified the way the chain
+identifies it: by (payer, nonce). The claim is an atomic insert made after the
+facilitator verifies the payment and before the handler runs, so of any number
+of concurrent copies exactly one proceeds. Because the claim comes after
+verification, junk payment headers cannot fill your database.
+
+**Store the good before asking for the money.** The handler's response is
+written to the journal before the settle is requested. Whatever happens to the
+process next, a payment that lands has something to deliver.
+
+**Never trust a failed settle.** A settle can broadcast and then time out, or
+land and lose its response. On any failure Latch asks an oracle instead of
+believing the facilitator. `eip3009Oracle` is one read-only `eth_call` to the
+token contract: `authorizationState(payer, nonce)` is true exactly when that
+authorization moved money. If it did, the caller gets the response. If it did
+not, the payment stays `settling` until its own `validBefore` passes, because
+until then it still could.
+
+**Recovery never charges.** The sweep only learns what already happened. It
+marks a payment `delivered` when the chain says it settled and `void` when it
+can no longer land. Only the caller's own retry, re-verified by the
+facilitator, can finish a settle that never went out.
+
+**A stored response is not a free copy.** Everything in a settled EIP-3009
+payment — payer, nonce, signature — is in the settlement transaction's
+calldata, on a public chain. So "the same payment again" proves nothing. The
+`latch` extension puts a fresh random token in each 402; the SDK's client
+echoes it back with the payment; it travels only inside TLS and never reaches
+the chain. A retry gets the stored response only by presenting it. A new
+signature under an existing `payment-identifier` is verified by the facilitator
+and must come from the same payer.
+
+**`stuck` is deliberate.** A payment that expired with no way to learn whether
+it landed is neither voided (which could hide a charge) nor marked delivered
+(which could invent one). It raises an alarm for a human.
+
+### Options
+
+| Option | Default | |
+|---|---|---|
+| `journal` | — | Where state lives. `postgresJournal(sql)` in production. |
+| `oracle` | none | Without one, an unclear settle can only be finished by the caller's retry, or ends `stuck`. |
+| `signer` | none | Signs a hash-chained receipt for every delivered payment. |
+| `staleMs` | 120 s | How long a claim may sit before its worker is presumed dead. Must exceed your slowest handler plus the facilitator timeout. |
+| `replayWindowMs` | 10 min | How long a paid response stays collectable. `0` turns replay off. |
+| `maxResponseBytes` | 256 KiB | Larger responses settle normally but are not stored for replay. |
+| `schemes` | `["exact"]` | Schemes Latch journals. Others pass through untouched. |
+| `onAlarm` | none | `settled_unrecorded`, `settlement_unresolved`, `stuck`, `journal_error`. Wire it to your pager. |
+
+### `auth-capture`
+
+The `auth-capture` scheme puts "charged only if delivered" on chain: money is
+held in escrow, then captured, voided or refunded. What stays off chain is the
+seller's record of each hold, and the store the SDK ships for it is in memory.
+Lose it and the holds still exist, but the server no longer knows which it may
+capture or must void.
+
+```ts
+import { AuthCaptureEvmScheme } from "@x402/evm/auth-capture/server";
+import { migrateAuthCapture, postgresAuthorizedPaymentStorage } from "latch402/x402";
+
+await migrateAuthCapture(sql);
+new AuthCaptureEvmScheme({ storage: postgresAuthorizedPaymentStorage(sql) });
+```
+
+It is the SDK's `AuthorizedPaymentStorage` interface on Postgres, tested for
+identical behaviour against the SDK's own store, for concurrent captures of one
+hold, and for surviving a restart. It has not been exercised against a live
+escrow contract.
+
+## Limits
+
+- **One flow.** Latch journals `exact` on the `authorization` flow (the
+  default). A covered route configured to settle *before* its handler
+  (`upfront`) is refused, uncharged: the SDK fires no hook when such a handler
+  succeeds, so delivery cannot be observed there.
+- **Handler side effects are yours.** The SDK runs your handler before the
+  money moves. If the settle then fails, the response is withheld and nothing
+  is charged, but whatever your handler already did has been done. Make it
+  idempotent, or make the paid step the last one.
+- **Replay returns JSON or HTML, with status 200.** That is what the SDK's
+  replay path can carry. Other content types settle once and are recorded, but
+  a retry gets `402 payment_already_used`.
+- **Replay needs the token.** The route must declare `latch.declare()` and the
+  client must echo server extensions. The official client does.
+- **A request is method, path and query.** The body is not part of what a
+  replay is matched against.
+- **Stored responses stay in the journal.** They are your callers' data at
+  rest. Encrypt the volume, and purge old rows on your own schedule; there is
+  no purge API yet.
+- **The oracle covers EIP-3009.** Permit2 and non-EVM payments have none yet,
+  so an unclear settle there waits for the caller's retry or ends `stuck`.
+  The oracle is only as honest as the RPC endpoint you give it.
+- **Amounts must fit a safe integer** of atomic units. That is 9 billion USDC;
+  an 18-decimal token overflows at 0.009 of a token and is refused.
+- **Pinned to SDK behaviour.** Latch relies on the SDK passing one payload
+  object through every hook of a request, and on its hook order. Both are
+  pinned by tests against 2.30; a future SDK that changes them fails the
+  build here, not your payments silently.
+
+## What is proven
+
+`npm test` — 128 tests. No network, no server, no API keys. The Postgres suites
+run a real PostgreSQL in-process via PGlite.
+
+- **The bridge against the real SDK** — `@x402/fetch` signs real EIP-3009
+  payments, `@x402/hono` serves them, and no test calls a Latch hook directly.
+  Crash injection at every journal write; replay, forgery and
+  `payment-identifier` races; a journal that goes down before the claim, before
+  the settle and after it; the same suite over Postgres.
+- **The strict gate** (below) — crash injection at every write, the published
+  attack classes, bounded retry under repeated process death, double-entry
+  accounting in the test facilitator so no test can pass by creating money.
+- **Both ports as executable contracts** — 22 rules for a `Journal`, 20 for a
+  `Facilitator`.
+
+```bash
+npm test          # everything above
+npm run test:dist # build to JavaScript and import it the way a consumer does
+npm run demo      # a narrated walkthrough of the strict gate
+```
 
 ---
 
-## The problem in one picture
+## The strict gate
 
-A paid endpoint does two things that cannot be made atomic: it moves money on a
-payment network, and it produces something using its own compute. Whichever you
-do first, a crash in the middle leaves a wrong answer.
+Latch began as a gate of its own, and that gate is still here: `quote()` opens
+a priced invoice, `redeem()` takes a payment proof and either delivers or
+leaves the caller uncharged. It settles **before** it produces and refunds if
+production fails, which is the order to use on a rail where you control both
+steps.
 
+**It does not speak the x402 wire format.** It issues its own invoice ids and
+takes its own proof shape; a stock x402 client cannot pay it. For x402, use the
+bridge above. The gate remains the reference for the state machine, the place
+the port contracts are defined, and the right tool for a non-x402 rail.
+
+```ts
+import { Latch, memoryJournal, hmacSigner } from "latch402";
+
+const gate = new Latch<{ prompt: string }, { answer: string }>(
+  { payTo: process.env.PAY_TO!, produceTimeoutMs: 12_000 },
+  {
+    journal: memoryJournal(),      // swap for postgresJournal(sql) in production
+    facilitator: myFacilitator,    // your rail, behind the Facilitator port
+    signer: hmacSigner(process.env.RECEIPT_SECRET!),
+    producer: {
+      async produce(req, ctx) {
+        // Runs only after the money is durably settled.
+        return { answer: await callModel(req.prompt, { signal: ctx.signal }) };
+      },
+    },
+  },
+);
 ```
-produce, then charge   ->  crash between them  ->  free goods
-charge, then produce   ->  crash between them  ->  the caller paid for nothing
-```
 
-The second is the right order — but only if the "paid for nothing" case is
-recoverable. That is the entire design.
+### Its rules
 
-## The method
-
-**1. Journal before you act.** Every state transition is written durably
-*before* the side effect it authorises. A crash therefore always leaves a
-record of what was about to happen, which is what makes recovery possible at
-all.
-
-**2. Never produce before settlement is committed.** Only `settled` — or
-`producing` itself, when recovery resumes a crashed attempt — can reach
-`producing`. Both are post-charge states, so no path reaches compute before the
-money moved. This is checked by a test, not by convention.
-
-**3. Never trust a negative answer from the payment network.** A settle call can
-move the money and still report failure — a dropped response, a timeout after
-broadcast. On any non-success the gate asks `statusOf(idempotencyKey)` and
-believes *that*. A facilitator without a status oracle cannot be made safe.
-
-**4. Every committed step has a compensating step.** If production fails after
-settlement, the money goes back. If the refund also fails, the invoice becomes
-`stuck` and an operator is paged — loudly, never silently kept.
-
-**5. Exactly-once, by derived key.** The idempotency key is a hash of
-(invoice, payer, amount, request). The same logical request always produces the
-same key, so retries return the original result; any change to the purchase
-produces a different key and is a different purchase.
-
-**6. Tamper-evident receipts.** Each receipt is signed and commits to the hash
-of the previous one, so neither party can rewrite history.
-
-## States
+1. **Journal before you act.** Every transition is durable before the side
+   effect it authorises.
+2. **Never produce before settlement is committed.** Checked by a test, not by
+   convention.
+3. **Never trust a negative answer from the payment network.** On any
+   non-success the gate asks `statusOf(idempotencyKey)` and believes that.
+4. **Every committed step has a compensating step.** Production fails after
+   settlement: the money goes back. The refund fails too: `stuck`, and a human
+   is paged.
+5. **Exactly-once, by derived key.** The idempotency key is a hash of
+   (invoice, payer, amount, request).
+6. **Tamper-evident receipts.** Signed, and each commits to the one before.
 
 ```mermaid
 stateDiagram-v2
@@ -81,14 +308,7 @@ stateDiagram-v2
     producing --> refunding: failed or timed out
     refunding --> refunded: money returned
     refunding --> stuck: refund failed - page a human
-    delivered --> [*]
-    void --> [*]
-    refunded --> [*]
-    stuck --> [*]
 ```
-
-Each terminal state has a defined money position, and the test suite asserts it
-every single time:
 
 | State | Money | Good |
 |---|---|---|
@@ -96,174 +316,37 @@ every single time:
 | `delivered` | charged exactly once | delivered |
 | `refunded` | net zero | not delivered |
 | `stuck` | held, flagged | not delivered |
-| `written_off` | never charged | delivered — *credit only, see below* |
+| `written_off` | never charged | delivered — *credit only* |
 
-## Batched settlement
+### Batched settlement
 
-Some rails settle cheaply by batching: a payment is accepted now and becomes
-final later. That forces a choice the strict rule never had to make — **wait
-for the batch, or serve the caller now and carry the risk until it lands.**
-
-**Waiting is the default, and needs no configuration.** A batched payment stays
-in `settling`, no compute is spent, and the sweep delivers once the batch lands.
-
-**Serving early is opt-in, and bounded:**
+Some rails settle cheaply by batching: accepted now, final later. The gate
+then has to choose between waiting for the batch and serving the caller on
+credit. **Waiting is the default.** Serving early is opt-in and bounded:
 
 ```ts
-new Latch(
-  {
-    payTo,
-    credit: {
-      maxOutstandingMicros: 5_000_000, // the most you can lose if every batch fails
-      maxPerPayerMicros: 500_000,      // so one caller cannot absorb all of it
-    },
-  },
-  deps,
-);
+new Latch({ payTo, credit: { maxOutstandingMicros: 5_000_000, maxPerPayerMicros: 500_000 } }, deps);
 ```
 
-```mermaid
-stateDiagram-v2
-    settling --> credited: batch accepted, credit reserved
-    credited --> producing: compute on credit
-    credited --> settled: batch landed first
-    credited --> void: batch failed first
-    producing --> fronted: delivered, batch pending
-    producing --> abandoning: failed, batch pending
-    fronted --> delivered: batch landed — paid
-    fronted --> written_off: batch failed — seller's loss
-    abandoning --> refunding: batch landed — give it back
-    abandoning --> void: batch failed — nothing moved
-```
+Credit relaxes only the seller's half of the promise — *delivered implies
+paid* — and only up to a limit the seller chose. The caller's half is never
+relaxed on any path. The limit check and the reservation are one atomic step;
+the decision is journaled before any compute is spent; recovery never extends
+new credit; and a test pins `credited` as the only state that reaches compute
+before money is final. `gate.creditExposure()` reports what is outstanding.
 
-**What credit relaxes, precisely.** The promise has two halves. The caller's
-half — *never charged without the good or a refund* — is never relaxed, on any
-path. Credit gives up only the seller's half — *delivered implies paid* — and
-only up to a limit the seller chose. `written_off` is that loss, recorded and
-receipted, never silent.
-
-The rules that make it safe:
-
-- **Atomic limit.** The credit check and the reservation are one step, so two
-  concurrent sales can never both fit under the limit and together exceed it.
-  Past the limit the gate falls back to waiting — not an error.
-- **Write-ahead.** The credit decision is journaled as `credited` before any
-  compute is spent against it.
-- **Recovery takes no new risk.** Credit exists to serve a caller who is
-  waiting. After a crash nobody is, so a recovered `credited` invoice waits for
-  its batch instead of producing against it.
-- **Stranded reservations fail safe.** A crash between resolving an invoice and
-  releasing its credit leaves a reservation behind. That can only make the gate
-  extend *less* credit, never more, and the sweep heals it.
-- **One exception, pinned by a test.** `credited` is the only state that reaches
-  compute before money is final. A test asserts exactly that list, so the
-  exception cannot quietly widen.
-
-`gate.creditExposure()` reports what is currently outstanding.
-
-## Try it
-
-```bash
-npm run demo          # a narrated walkthrough in the terminal
-npm test              # 90 tests: crash injection, attacks, credit, crypto, Postgres
-npm run build:console # rebuild the visual console at web/latch-console.html
-```
-
-Nothing above needs a network, a server, or an API key.
-
-## Usage
-
-```ts
-import { Latch, memoryJournal, hmacSigner } from "latch402";
-
-const gate = new Latch<{ prompt: string }, { answer: string }>(
-  { payTo: process.env.PAY_TO!, produceTimeoutMs: 12_000 },
-  {
-    journal: memoryJournal(),      // swap for SQL in production
-    facilitator: myFacilitator,    // Coinbase, Stripe, your own rail
-    signer: hmacSigner(process.env.RECEIPT_SECRET!),
-    producer: {
-      async produce(req, ctx) {
-        // Runs only after the money is durably settled.
-        // ctx gives you a budget, a deadline and an AbortSignal.
-        return { answer: await callModel(req.prompt, { signal: ctx.signal }) };
-      },
-    },
-  },
-);
-```
-
-An HTTP route is then just two branches:
-
-```ts
-export async function POST(request: Request) {
-  const body = await request.json();
-  const payer = request.headers.get("x-agent-id");
-  const proof = request.headers.get("payment-signature");
-
-  if (!proof) {
-    const { payment } = await gate.quote({
-      payer, sku: body.sku, amountMicros: priceOf(body.sku), request: body,
-    });
-    return Response.json(payment, { status: 402 });
-  }
-
-  try {
-    const { result, receipt } = await gate.redeem({
-      invoiceId: JSON.parse(proof).invoiceId, payer, proof, request: body,
-    });
-    return Response.json(result, {
-      headers: { "x-payment-response": JSON.stringify(receipt) },
-    });
-  } catch (err) {
-    if (isLatchError(err)) {
-      return Response.json({ error: err.message, code: err.code },
-        { status: httpStatusFor(err.code) });
-    }
-    throw err;
-  }
-}
-```
-
-Run `gate.sweep()` on a timer. That is what finishes invoices whose caller
-never came back.
-
-## What is proven
-
-`npm test` — 90 tests. No network, no server, no API keys: the Postgres suite
-runs a real PostgreSQL 18 in-process via PGlite.
-
-- **Crash injection at every journal write on the happy path**, both after the
-  write became durable and before it did. Nine crash points, each restarted and
-  recovered, each checked for money soundness. The important one is *"settlement
-  succeeded and the process died before recording it"* — the case that loses
-  money permanently in a naive implementation.
-- **The published attack classes**: free shopping, settlement divergence,
-  proof replay, concurrent double-spend, cost drain.
-- **Bounded retry under repeated process death**, and a receipt that commits to
-  the result the caller actually receives rather than a later re-production.
-  Both are regressions for real defects found in audit.
-- **Double-entry accounting** in the test facilitator, so every test asserts
-  that no money was created or destroyed — not merely that a function returned
-  `ok`.
-- **The full gate over Postgres**, crash recovery included, proving the
-  `Journal` port is a real abstraction rather than a comfortable fiction.
+This is the gate's own mechanism. It does not implement x402's
+`batch-settlement` scheme.
 
 ## Conformance kit
 
-The port contracts used to be prose in doc comments, which meant nobody could
-check an adapter against them. They are now executable — 22 rules for the
-`Journal`, 20 for the `Facilitator` — and each one states what breaking it
-costs in production:
+The port contracts are executable, and each rule states what breaking it costs
+in production:
 
 ```ts
-import {
-  runJournalConformance,
-  runFacilitatorConformance,
-  formatReport,
-} from "latch402/conformance";
+import { runJournalConformance, runFacilitatorConformance, formatReport } from "latch402/conformance";
 
-const report = await runJournalConformance({ create: () => myJournal() });
+const report = await runJournalConformance({ create: async () => myJournal() });
 console.log(formatReport(report, "myJournal"));
 ```
 
@@ -275,103 +358,52 @@ console.log(formatReport(report, "myJournal"));
           two different keys refund the same settlement twice.
 ```
 
-No test framework, no assertion library — it runs anywhere the library does,
-and returns a report rather than throwing, so every violation surfaces at once.
+No test framework and no assertion library; it returns a report rather than
+throwing, so every violation surfaces at once. A check it cannot run is
+reported as **skipped, never as passed**.
 
-**For a facilitator, your fixture issues the proofs.** The kit cannot fabricate
-a signed authorisation for someone else's payment network, so you supply
-`issue()` — for a real network, that is where a funded test wallet signs. Supply
-`balanceOf()` too and the money-movement checks run; without it they are
-reported as **skipped, never as passed**. The kit will not hand out a clean bill
-of health it did not earn.
+It cannot check anything that needs a fault injected into the network — a
+dropped response, a settle that lands after reporting failure. Those paths are
+covered by the crash and attack suites against the reference ledger.
 
-**What it cannot check.** Anything that needs a fault injected into the network:
-a dropped response, a settle that lands after reporting failure, a settlement
-still in flight when `statusOf` is asked. In particular it cannot verify that
-`statusOf` only says "unknown" when nothing can still land later — that has to
-come from the network's own guarantees. The gate-level crash and attack suites
-cover those paths against the reference ledger.
+Building it found real bugs: the Postgres journal reported a missing invoice
+as a *retryable* conflict (`J16`); the reference ledger settled one invoice
+with another's proof (`F10`/`F11`), refunded settlements that never happened
+(`F18`/`F19`), and refunded one settlement twice under two keys (`F20`).
 
-**It earns its place.** Building it found real bugs in both kinds of adapter:
-
-- `J16` — the Postgres journal reported a missing invoice as a *retryable*
-  conflict, telling callers to retry forever something that could never succeed.
-- `F10`/`F11` — the reference ledger's `settle` never looked at the proof. An
-  authorisation issued for one invoice settled another.
-- `F18`/`F19` — its `refund` never checked the reference, and paid out against
-  a settlement that never happened.
-- `F20` — one settlement could be refunded twice under different refund keys,
-  paying the buyer back double.
-
-The kit is self-checking: tests run it against deliberately broken adapters and
-assert it reports exactly the known violation.
-
-## Ports you must implement for production
-
-| Port | Notes |
-|---|---|
-| `Journal` | Durable, append-only, ordered per invoice. **A Postgres adapter ships in the box** — see below. |
-| `Facilitator` | `settle`/`refund` **must** be idempotent on `idempotencyKey`, and `statusOf` **must** be honest. Without a status oracle, crash recovery is guesswork. |
-| `Producer` | Should respect `ctx.signal` and `ctx.budgetMicros`. Throwing is safe — it refunds. |
-
-### Postgres
+## Postgres
 
 ```ts
 import { postgresJournal, migrate } from "latch402";
 
-await migrate(sql);                    // run once at deploy, safe to re-run
-const journal = postgresJournal(sql);  // hand it to the gate
+await migrate(sql);
+const journal = postgresJournal(sql);
 ```
-
-`sql` is a small two-method shape (`query` and `transaction`) that `pg`,
-`postgres.js` and PGlite each wrap in about ten lines — so the library keeps
-zero runtime dependencies and you keep your own driver.
 
 Three guarantees are enforced by the schema rather than by application code:
 history is append-only, `append` compare-and-sets on `seq` so two workers can
-never both advance one invoice, and a nonce is consumed in a single statement
-so a replay cannot slip between a check and a write.
+never both advance one invoice, and an invoice is opened by a primary-key
+insert so it can be opened once. The bridge and the gate can share one journal;
+each sweeps only its own invoices.
 
-The adapter is tested against a real PostgreSQL 18 — the full gate, including
-crash recovery, runs over it in `test/postgres-journal.test.ts`.
+## More limits
 
-`memoryJournal()` remains the reference implementation for tests and local
-development.
-
-## Using this?
-
-If you're integrating it, or you hit a failure mode it doesn't handle, open an
-issue. Reports of cases that break it are more useful to this project than
-stars are.
-
-## Honest limits
-
-- The credit limit's atomicity on Postgres rests on a `FOR UPDATE` row lock.
-  The test suite runs PGlite, which executes transactions one at a time, so it
-  passes the concurrency check with or without the lock — it cannot
-  demonstrate the multi-connection race. Under real Postgres the lock is what
-  serialises credit decisions; that is standard `READ COMMITTED` behaviour, not
-  something this suite proves.
-- A caller retrying after a crash on a `credited` invoice waits for the batch
-  rather than being served on credit. Safe, but slower than it could be.
-- The sweep polls `statusOf` for every invoice delivered on credit until its
-  batch resolves. Size the sweep interval to your batch interval.
-
+- The test suite runs PGlite, which executes transactions one at a time. It
+  cannot demonstrate a multi-connection race, so the credit limit's row lock
+  and the `auth-capture` store's advisory lock rest on standard Postgres
+  behaviour, not on something this suite proves.
 - The in-memory journal is for tests and local development only.
-- Receipts use HMAC, so a buyer needs the shared secret to verify. Swap
-  `hmacSigner` for an asymmetric signer if third parties must verify alone.
-- `stuck` invoices need a human. That is a feature, but it means you need an
-  alert on them.
-- Request bodies are persisted so recovery can replay them. Encrypt them at
-  rest and purge them at terminal state.
-- `quote()` is unbounded: every call opens an invoice row. Rate-limit it at
-  your edge, or a flood of unpaid quotes bloats the journal.
-- Ships as TypeScript source. Node 24 runs it directly (as do 22.18+ and any
-  bundler); older runtimes need a transpile step.
-- After a crash mid-settlement, recovery trusts `statusOf`. Its contract is
-  strict — "unknown" must mean no settlement can still land later. A
-  facilitator that cannot promise that must report "pending" instead; the
-  sweep will keep asking.
-- This handles the seller's side of the seam. The buyer's side — spend policy,
+- Receipts use HMAC, so a buyer needs the shared secret to verify. Swap in an
+  asymmetric signer if third parties must verify alone.
+- `stuck` needs a human. That is a feature, and it means you need an alert.
+- The strict gate's `quote()` is unbounded: every call opens an invoice row.
+  Rate-limit it at your edge.
+- Node 20 or later.
+- This is the seller's side of the seam. The buyer's side — spend policy,
   budget ceilings, an audit trail of what your agents bought — is the mirror
   image and is not built here.
+
+## License
+
+MIT. See [SECURITY.md](SECURITY.md) to report a vulnerability and
+[CHANGELOG.md](CHANGELOG.md) for what changed.
