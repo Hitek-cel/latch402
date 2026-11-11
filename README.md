@@ -414,5 +414,5 @@ each sweeps only its own invoices.
 
 ## License
 
-MIT. See [SECURITY.md](SECURITY.md) to report a vulnerability and
+Built by Azzam ([@Hitek-cel](https://github.com/Hitek-cel)). MIT. See [SECURITY.md](SECURITY.md) to report a vulnerability and
 [CHANGELOG.md](CHANGELOG.md) for what changed.
