@@ -3,3 +3,4 @@ node_modules/
 .tanstack/
 .node_modules.lock
 *.log
+dist/

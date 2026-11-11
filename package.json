@@ -1,23 +1,55 @@
 {
   "name": "latch402",
-  "version": "0.2.0",
-  "description": "A settlement-safe gate for paid HTTP: charge if and only if delivered.",
+  "version": "0.3.0",
+  "description": "Settlement safety for paid HTTP and x402: charged if and only if delivered.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./conformance": "./src/conformance/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./x402": {
+      "types": "./dist/x402/index.d.ts",
+      "default": "./dist/x402/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance/index.d.ts",
+      "default": "./dist/conformance/index.js"
+    }
   },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
   "scripts": {
+    "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.ts",
+    "test:dist": "npm run build && node scripts/smoke-dist.mjs",
     "typecheck": "tsc --noEmit",
     "demo": "node demo.ts",
-    "build:console": "node scripts/build-console.mjs"
+    "build:console": "node scripts/build-console.mjs",
+    "prepublishOnly": "npm run typecheck && npm test && npm run test:dist"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",
     "@types/node": "^22.20.1",
+    "@x402/core": "^2.30.0",
+    "@x402/evm": "^2.30.0",
+    "@x402/extensions": "^2.30.0",
+    "@x402/fetch": "^2.30.0",
+    "@x402/hono": "^2.30.0",
     "esbuild": "^0.28.2",
-    "typescript": "^5.9.3"
+    "hono": "^4.13.17",
+    "typescript": "^5.9.3",
+    "viem": "^2.57.17"
   },
   "keywords": [
     "x402",
@@ -26,17 +58,20 @@
     "settlement",
     "idempotency",
     "http-402",
-    "crash-recovery"
+    "crash-recovery",
+    "x402-extension",
+    "auth-capture",
+    "eip-3009",
+    "usdc"
   ],
   "license": "MIT",
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Hitek-cel/latch402.git"
   },
+  "bugs": {
+    "url": "https://github.com/Hitek-cel/latch402/issues"
+  },
+  "homepage": "https://github.com/Hitek-cel/latch402#readme",
   "author": "Hitek-cel"
 }

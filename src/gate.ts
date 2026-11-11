@@ -424,6 +424,9 @@ export class Latch<TReq, TRes> {
     const ids = await this.d.journal.findInFlight(this.clock.now() - staleMs, limit);
     const out: { invoiceId: string; state: State }[] = [];
     for (const id of ids) {
+      // Payments journaled by the x402 bridge follow the SDK's order (compute
+      // before settlement) and are recovered by the bridge's own sweep.
+      if (id.startsWith("x402_")) continue;
       try {
         out.push({ invoiceId: id, state: await this.recover(id) });
       } catch {
