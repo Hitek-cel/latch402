@@ -943,3 +943,42 @@ test("oracle: anything short of an answer throws, so the bridge waits instead of
   await assert.rejects(oracle({ ...PROBE, method: "permit2" }), /cannot answer/);
   await assert.rejects(oracle({ ...PROBE, nonce: "0x01" }), /32 bytes/);
 });
+
+// ── a caller that signs again while a settle is unresolved ────────────────
+
+test("x402: while a settle is unresolved, a new signature for the same purchase is refused if it carries the payment identifier", async () => {
+  const w = world({ pid: true });
+  const id = "pay_0123456789abcdef0123";
+  w.control.fault = "fails_clean";
+  const first = await sign(w, { q: "a" }, id);
+  assert.equal((await post(w.app, { q: "a" }, first)).status, 402);
+  assert.deepEqual(await states(w.journal, w), ["settling"], "the first payment may still land");
+
+  // The SDK answered 402, so an obedient client signs again.
+  w.control.fault = "none";
+  const second = await post(w.app, { q: "a" }, await sign(w, { q: "a" }, id));
+  assert.equal(second.status, 402);
+  assert.equal(reasonOf(second), "payment_in_progress");
+  assert.equal(w.chain.size, 0, "the second signature is never settled");
+  assert.equal(w.control.handlerRuns, 1);
+});
+
+test("x402: limit — without a payment identifier, a re-signed payment is a new purchase and both can be charged", async () => {
+  const w = world();
+  w.control.fault = "fails_clean";
+  const first = await sign(w, { q: "a" });
+  assert.equal((await post(w.app, { q: "a" }, first)).status, 402);
+
+  w.control.fault = "none";
+  assert.equal((await post(w.app, { q: "a" }, await sign(w, { q: "a" }))).status, 200);
+
+  // The first authorization lands after all (a delayed broadcast).
+  const auth = decodePaymentSignatureHeader(first).payload.authorization as { from: string; nonce: string };
+  w.chain.use(auth.from, auth.nonce);
+  w.clock.advance(STALE + 1);
+  await w.latch.sweep();
+
+  assert.equal(w.chain.size, 2, "two charges for one purchase: what payment-identifier exists to prevent");
+  // Each charge is still matched by a good the caller can collect; nothing is charged for nothing.
+  assert.deepEqual((await states(w.journal, w)).sort(), ["delivered", "delivered"]);
+});

@@ -34,7 +34,7 @@ star. [Open an issue.](https://github.com/Hitek-cel/latch402/issues)
 ## Use it with the official SDK
 
 ```bash
-npm install latch402
+npm install latch402 @x402/extensions
 ```
 
 ```ts
@@ -43,6 +43,7 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { migrate, postgresJournal } from "latch402";
 import { eip3009Oracle, latchX402 } from "latch402/x402";
+import { PAYMENT_IDENTIFIER, declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
 
 await migrate(sql); // once at deploy; safe to re-run
 
@@ -61,8 +62,9 @@ app.use(
     {
       "POST /answer": {
         accepts: { scheme: "exact", price: "$0.01", network: "eip155:8453", payTo: PAY_TO },
-        // Lets a caller collect a paid response again after a lost reply or a crash.
-        extensions: { ...latch.declare() },
+        // latch: collect a paid response again after a lost reply or a crash.
+        // payment-identifier: a re-signed retry of one purchase is never charged twice.
+        extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
       },
     },
     server,
@@ -207,6 +209,13 @@ escrow contract.
   a retry gets `402 payment_already_used`.
 - **Replay needs the token.** The route must declare `latch.declare()` and the
   client must echo server extensions. The official client does.
+- **Declare `payment-identifier` too.** When a settle's outcome is still
+  unknown, the caller gets the SDK's 402, which invites a client to sign a new
+  payment rather than retry the same one. If the first payment then lands,
+  that is two charges for one purchase — each matched by a good the caller can
+  collect, but still two. With the `payment-identifier` extension declared on
+  the route, the second signature is refused until the first is resolved.
+  Without it, Latch cannot tell a re-signed purchase from a new one.
 - **A request is method, path and query.** The body is not part of what a
   replay is matched against.
 - **Stored responses stay in the journal.** They are your callers' data at
@@ -224,7 +233,7 @@ escrow contract.
 
 ## What is proven
 
-`npm test` — 128 tests. No network, no server, no API keys. The Postgres suites
+`npm test` — 130 tests. No network, no server, no API keys. The Postgres suites
 run a real PostgreSQL in-process via PGlite.
 
 - **The bridge against the real SDK** — `@x402/fetch` signs real EIP-3009
