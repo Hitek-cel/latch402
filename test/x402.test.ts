@@ -574,6 +574,7 @@ test("x402 crash matrix: die at every journal write — charged if and only if t
   const faults: Fault[] = ["none", "hangs_without_landing", "lands_then_hangs"];
   let cases = 0;
   const outcomes = { charged: 0, uncharged: 0 };
+  const rows: Record<string, unknown>[] = [];
 
   for (const fault of faults) {
     for (let at = 1; at <= WRITES + 1; at++) {
@@ -622,6 +623,7 @@ test("x402 crash matrix: die at every journal write — charged if and only if t
           assert.equal(auditChain(receipts, hmacSigner(SECRET)), -1, label);
         }
         outcomes[charged ? "charged" : "uncharged"]++;
+        rows.push({ fault, write: at, when, firstStatus: first?.status ?? "no response", collectedOn: seenGood.indexOf(true), charged, final: final.join(",") });
         cases++;
       }
     }
@@ -629,7 +631,10 @@ test("x402 crash matrix: die at every journal write — charged if and only if t
   assert.equal(cases, faults.length * (WRITES + 1) * 2);
   // Both sides of the "if and only if" must actually have been exercised.
   assert.ok(outcomes.charged >= 10 && outcomes.uncharged >= 10, JSON.stringify(outcomes));
-  if (process.env.LATCH_TEST_VERBOSE) console.log("crash matrix outcomes", outcomes);
+  if (process.env.LATCH_TEST_VERBOSE) {
+    console.log("crash matrix outcomes", outcomes);
+    for (const r of rows) console.log("CRASHROW " + JSON.stringify(r));
+  }
 });
 
 // ── a journal that is down ────────────────────────────────────────────────
