@@ -47,7 +47,7 @@ All 48 hold, along with 130 tests overall.
 
 ## Then I ran it for real
 
-`npm run example:testnet` starts a real server on localhost, protects it with Latch, and pays it with the official client on Base Sepolia through the public x402 facilitator, with free test USDC. It runs a normal purchase, a lost reply, three concurrent copies and a server that dies right after the money moves. The buyer's balance went from 20.00 to 19.97 test USDC: exactly three charges for three purchases. The retry, the duplicates and the crash recovery moved nothing extra.
+`npm run example:testnet` starts a real server on localhost, protects it with Latch, and pays it with the official client on Base Sepolia through the public x402 facilitator, with free test USDC. It runs a normal purchase, a lost reply, three concurrent copies and a server that dies right after the money moves. The buyer's balance went from 20.00 to 19.97 test USDC: exactly three charges for three purchases. The retry, the duplicates and the crash recovery moved nothing extra. A second run, with the extra step for a buyer who signs again for the same order, took the balance from 19.97 to 19.93: four charges for four purchases.
 
 It hasn't handled real money. Nothing here has run on mainnet or in production.
 

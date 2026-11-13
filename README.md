@@ -24,9 +24,10 @@ lifecycle hooks.
 - Every guarantee below is a test in this repository. The chain in those tests
   is a fake; the facilitator's failures are injected.
 - **It has run live on Base Sepolia** (2026-11-13), through the public x402
-  facilitator, with test USDC: `npm run example:testnet`. All five steps held,
-  and the chain showed exactly three charges for three purchases — the lost
-  reply, the duplicate copies and the crash recovery moved nothing extra.
+  facilitator, with test USDC: `npm run example:testnet`. Every step held, and
+  the chain showed exactly one charge per purchase — four for four in the
+  latest run. The lost reply, the duplicate copies, the buyer who signed again
+  for the same order and the crash recovery moved nothing extra.
 - **It has not handled real money.** Nothing here has run on mainnet or in
   production.
 - It covers one payment flow of one scheme. See [Limits](#limits).
