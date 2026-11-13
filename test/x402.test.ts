@@ -37,6 +37,17 @@ import { eip3009Oracle, latchX402, type SettlementOracle, type X402Alarm } from 
  * only behaviour a seller ever gets.
  */
 
+// Several tests break things on purpose, and the SDK and Hono log what broke.
+// Those lines are expected; they are hidden unless LATCH_TEST_VERBOSE is set.
+if (!process.env.LATCH_TEST_VERBOSE) {
+  const { warn, error } = console;
+  const expected = (args: unknown[]) =>
+    (typeof args[0] === "string" && args[0].startsWith("[x402]")) ||
+    (args[0] instanceof Error && args[0].message === "handler exploded");
+  console.warn = (...args: unknown[]) => (expected(args) ? undefined : warn(...args));
+  console.error = (...args: unknown[]) => (expected(args) ? undefined : error(...args));
+}
+
 const NETWORK = "eip155:84532";
 const URL_ = "http://local.test/buy";
 const SELLER = "0x000000000000000000000000000000000000dEaD";

@@ -19,7 +19,7 @@ lifecycle hooks.
 
 **0.3.0. Not yet used in production by anyone, including its author.**
 
-- It plugs into the official SDK (`@x402/core` 2.30, tested with `@x402/hono`
+- It plugs into the official SDK (`@x402/core` 2.30 and 2.31, tested with `@x402/hono`
   and `@x402/fetch`). The official client pays an official server through it.
 - Every guarantee below is a test in this repository. The chain in those tests
   is a fake; the facilitator's failures are injected.
@@ -30,6 +30,25 @@ lifecycle hooks.
 
 If you try it and it breaks, that report is worth more to this project than a
 star. [Open an issue.](https://github.com/Hitek-cel/latch402/issues)
+
+## See it work
+
+```bash
+git clone https://github.com/Hitek-cel/latch402 && cd latch402 && npm install
+npm run example
+```
+
+This starts a real HTTP server on `127.0.0.1`, protects it with Latch over an
+in-process PostgreSQL, and pays it with the official x402 client. Then it
+breaks things on purpose: a lost reply, three copies of one payment, and a
+server that dies right after the money moved. The chain is simulated, so it
+needs no network, keys or wallet.
+
+`npm run example:testnet` runs the same five steps live on Base Sepolia,
+through the public x402 facilitator, with free test USDC. It creates a
+throwaway wallet in `.latch-demo/` (ignored by git) and tells you how to fund
+it from Circle's faucet. It refuses any network but Base Sepolia and prints
+every request it makes.
 
 ## Use it with the official SDK
 
@@ -228,7 +247,7 @@ escrow contract.
   an 18-decimal token overflows at 0.009 of a token and is refused.
 - **Pinned to SDK behaviour.** Latch relies on the SDK passing one payload
   object through every hook of a request, and on its hook order. Both are
-  pinned by tests against 2.30; a future SDK that changes them fails the
+  pinned by tests against 2.30 and 2.31; a future SDK that changes them fails the
   build here, not your payments silently.
 
 ## What is proven
@@ -250,6 +269,7 @@ run a real PostgreSQL in-process via PGlite.
 ```bash
 npm test          # everything above
 npm run test:dist # build to JavaScript and import it the way a consumer does
+npm run example   # the bridge on a real server, offline (see "See it work")
 npm run demo      # a narrated walkthrough of the strict gate
 ```
 
