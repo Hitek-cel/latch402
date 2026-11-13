@@ -88,7 +88,8 @@ app.use(
       "POST /answer": {
         accepts: { scheme: "exact", price: "$0.01", network: "eip155:8453", payTo: PAY_TO },
         // latch: collect a paid response again after a lost reply or a crash.
-        // payment-identifier: a re-signed retry of one purchase is never charged twice.
+        // payment-identifier: a re-signed retry is never charged twice, if the client
+        // sends the same identifier for the same purchase (see Limits).
         extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
       },
     },
@@ -234,13 +235,21 @@ escrow contract.
   a retry gets `402 payment_already_used`.
 - **Replay needs the token.** The route must declare `latch.declare()` and the
   client must echo server extensions. The official client does.
-- **Declare `payment-identifier` too.** When a settle's outcome is still
-  unknown, the caller gets the SDK's 402, which invites a client to sign a new
-  payment rather than retry the same one. If the first payment then lands,
-  that is two charges for one purchase — each matched by a good the caller can
-  collect, but still two. With the `payment-identifier` extension declared on
-  the route, the second signature is refused until the first is resolved.
-  Without it, Latch cannot tell a re-signed purchase from a new one.
+- **Declare `payment-identifier`, and have the client derive the identifier
+  from the purchase.** When a settle's outcome is still unknown, the caller
+  gets the SDK's 402, which invites a client to sign a new payment rather than
+  retry the same one. If the first payment then lands, that is two charges for
+  one purchase — each matched by a good the caller can collect, but still two.
+  With `payment-identifier` declared on the route, a second signature under
+  the same identifier is refused until the first is resolved. That only helps
+  if the retry carries the **same** identifier: the stock client sends none,
+  and `appendPaymentIdentifierToExtensions(extensions)` called without an id
+  generates a fresh random one each time, which Latch sees as a new purchase.
+  Derive it from something stable, such as an order or invoice id, for example
+  `appendPaymentIdentifierToExtensions(extensions, "order_" + orderId)`.
+  Without a stable identifier, Latch cannot tell a re-signed purchase from a
+  new one. (Thanks to [Selliksss](https://github.com/Selliksss), who caught
+  this by running the demo.)
 - **A request is method, path and query.** The body is not part of what a
   replay is matched against.
 - **Stored responses stay in the journal.** They are your callers' data at

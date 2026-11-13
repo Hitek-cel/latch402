@@ -33,7 +33,7 @@ None of this is exotic. These are retries and timeouts.
 
 Giving a stored response back to "the same payment" sounds simple. It isn't, because a settled EIP-3009 payment is public. Its payer, nonce and signature are all in the settlement transaction's calldata. Anyone watching the chain could rebuild the payment header and ask for the response.
 
-So the payment can't be the proof. The 402 carries a fresh random token in a small server extension; the official client echoes server extensions back with its payment, and the token travels only inside TLS, never to the chain. A retry gets the stored response only by presenting it. For the re-signed-retry case, the SDK's `payment-identifier` extension does the job: a second signature under the same identifier is refused while the first is unresolved, and answered from the store once it settles.
+So the payment can't be the proof. The 402 carries a fresh random token in a small server extension; the official client echoes server extensions back with its payment, and the token travels only inside TLS, never to the chain. A retry gets the stored response only by presenting it. For the re-signed-retry case, the SDK's `payment-identifier` extension does the job: a second signature under the same identifier is refused while the first is unresolved, and answered from the store once it settles. That holds only if the client reuses the identifier for the same purchase, deriving it from an order or invoice id; the stock client sends none, and generating a fresh random one per call protects nothing.
 
 ## Killing the server at every write
 
