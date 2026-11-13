@@ -998,3 +998,42 @@ test("x402: limit — without a payment identifier, a re-signed payment is a new
   // Each charge is still matched by a good the caller can collect; nothing is charged for nothing.
   assert.deepEqual((await states(w.journal, w)).sort(), ["delivered", "delivered"]);
 });
+
+// ── a payment identifier derived from the purchase ────────────────────────
+
+test("purchasePaymentId: stable per purchase, distinct across purchases, valid for the extension", async () => {
+  const { isValidPaymentId } = await import("@x402/extensions/payment-identifier");
+  const { purchasePaymentId } = await import("../src/x402/index.ts");
+
+  const a = purchasePaymentId("order-42");
+  assert.equal(purchasePaymentId("order-42"), a, "the same purchase gives the same identifier, every time");
+  assert.notEqual(purchasePaymentId("order-43"), a);
+  assert.notEqual(purchasePaymentId("0xBuyer", "order-42"), a, "every part counts");
+  assert.notEqual(purchasePaymentId("ab", "c"), purchasePaymentId("a", "bc"), "parts cannot run into each other");
+  assert.equal(isValidPaymentId(a), true, "the SDK accepts it");
+  assert.doesNotMatch(a, /order/, "it reveals nothing about the order");
+  assert.throws(() => purchasePaymentId());
+  assert.throws(() => purchasePaymentId("order-42", ""));
+});
+
+test("x402: a buyer told 'failed' who signs again for the same order is not charged twice", async () => {
+  const { purchasePaymentId } = await import("../src/x402/index.ts");
+  const w = world({ pid: true });
+  const id = purchasePaymentId("order-42");
+
+  w.control.fault = "fails_clean"; // the buyer is told it failed; the first payment is still live
+  const first = await sign(w, { q: "a" }, id);
+  assert.equal((await post(w.app, { q: "a" }, first)).status, 402);
+
+  w.control.fault = "none";
+  const again = await post(w.app, { q: "a" }, await sign(w, { q: "a" }, purchasePaymentId("order-42")));
+  assert.equal(reasonOf(again), "payment_in_progress", "the re-signed payment for the same order is refused");
+  assert.equal(w.chain.size, 0);
+
+  // Retrying the original payment finishes the purchase: one charge, one answer.
+  w.clock.advance(STALE + 1);
+  const retry = await post(w.app, { q: "a" }, first);
+  assert.equal(retry.status, 200);
+  assert.equal(w.chain.size, 1);
+  assert.equal(w.control.handlerRuns, 1);
+});

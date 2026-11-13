@@ -7,7 +7,8 @@
  * Both start a real HTTP server on 127.0.0.1, protect it with Latch over an
  * in-process PostgreSQL, and pay it with the official x402 client. Then they
  * break things on purpose: a lost reply, three copies of one payment, and a
- * server that dies after the money moved.
+ * buyer told "failed" who signs again for the same order, and a server that
+ * dies after the money moved.
  *
  * Testnet mode moves free test USDC only. It refuses any network but Base
  * Sepolia, contacts only the facilitator and the Base Sepolia RPC (every
@@ -28,11 +29,16 @@ import {
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import { x402Client } from "@x402/fetch";
+import {
+  PAYMENT_IDENTIFIER,
+  appendPaymentIdentifierToExtensions,
+  declarePaymentIdentifierExtension,
+} from "@x402/extensions/payment-identifier";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { migrate, postgresJournal, type SqlClient, type SqlExecutor } from "../src/adapters/postgres-journal.ts";
 import type { Journal } from "../src/ports.ts";
-import { eip3009Oracle, latchX402, type SettlementOracle } from "../src/x402/index.ts";
+import { eip3009Oracle, latchX402, purchasePaymentId, type SettlementOracle } from "../src/x402/index.ts";
 
 const LIVE = process.argv.includes("--testnet");
 
@@ -120,13 +126,20 @@ async function usdcBalance(address: string): Promise<bigint> {
 
 const usd = (units: bigint) => `${units / 1_000_000n}.${(units % 1_000_000n).toString().padStart(6, "0")} USDC`;
 
-/** A facilitator that can be told to "kill the server" right after the money moves. */
+/**
+ * A facilitator that can be told to fail without moving anything (the buyer is
+ * told "failed"), or to "kill the server" right after the money moves.
+ */
 function crashable(inner: FacilitatorClient) {
-  const crash = { armed: false, settledTx: "" };
+  const crash = { armed: false, settledTx: "", failNext: false };
   const facilitator: FacilitatorClient = {
     getSupported: () => inner.getSupported(),
     verify: (p, r) => inner.verify(p, r),
     async settle(p, r) {
+      if (crash.failNext) {
+        crash.failNext = false;
+        return { success: false, errorReason: "facilitator_unavailable", transaction: "", network: r.network };
+      }
       const result = await inner.settle(p, r);
       if (crash.armed && result.success) {
         crash.armed = false;
@@ -161,7 +174,7 @@ async function startServer(journal: Journal, facilitator: FacilitatorClient, ora
         "POST /answer": {
           accepts: { scheme: "exact", price: PRICE, network: NETWORK, payTo },
           description: "Latch demo: one paid answer",
-          extensions: { ...latch.declare() },
+          extensions: { ...latch.declare(), [PAYMENT_IDENTIFIER]: declarePaymentIdentifierExtension() },
         },
       },
       server,
@@ -208,11 +221,19 @@ function buyer(privateKey: `0x${string}`) {
       headers: { "content-type": "application/json", ...(header ? { "payment-signature": header } : {}) },
       body: JSON.stringify(body),
     });
-  /** Ask for the price and sign it. The header is what a retry would resend. */
-  const sign = async (url: string, body: unknown) => {
+  /**
+   * Ask for the price and sign it. The header is what a retry would resend.
+   * With an order id, the payment carries an identifier derived from it, so
+   * signing again for the same order is recognisably the same purchase.
+   */
+  const sign = async (url: string, body: unknown, orderId?: string) => {
     const unpaid = await post(url, body);
     const required = decodePaymentRequiredHeader(unpaid.headers.get("payment-required") ?? "");
-    return encodePaymentSignatureHeader(await client.createPaymentPayload(required));
+    const payload = await client.createPaymentPayload(required);
+    if (orderId) {
+      payload.extensions = appendPaymentIdentifierToExtensions(payload.extensions ?? {}, purchasePaymentId(orderId));
+    }
+    return encodePaymentSignatureHeader(payload);
   };
   return { post, sign };
 }
@@ -342,11 +363,31 @@ async function main() {
   check(statuses.filter((s) => s === 200).length === 1, `one caller served; the others told: ${r3.map(reasonOf).filter(Boolean).join(", ")}`, `statuses ${statuses.join(", ")}`);
   note("Without Latch the SDK runs the paid work three times for one payment.");
 
-  // 4 — the server dies after the money moved
-  step(4, "The server dies right after the money moves, before it can reply");
+  // 4 — told "failed", the buyer signs again for the same order
+  step(4, 'The buyer is told the payment failed, and signs a new one for the same order');
+  const before4 = srv.runs.count;
+  crash.failNext = true; // nothing moves; the first payment stays valid and could still land
+  const h4a = await b.sign(srv.url, { question: "order" }, "order-1001");
+  const r4a = await b.post(srv.url, { question: "order" }, h4a);
+  check(r4a.status === 402, "the first attempt was answered 402, as a real failure would be", `expected 402, got ${r4a.status}`);
+  const h4b = await b.sign(srv.url, { question: "order" }, "order-1001");
+  const r4b = await b.post(srv.url, { question: "order" }, h4b);
+  check(r4b.status === 402 && reasonOf(r4b) === "payment_in_progress", "the new signature for the same order was refused, so it can never be charged", `expected a refusal, got ${r4b.status} ${reasonOf(r4b) ?? ""}`);
+  note("Both payments carry an identifier derived from the order id (purchasePaymentId).");
+  note("Without Latch, or with a fresh random identifier per attempt, the second signature is a second charge.");
+  note(`Waiting ${STALE_MS / 1000}s, then the buyer retries the original payment…`);
+  await sleep(STALE_MS + 500);
+  const r4c = await b.post(srv.url, { question: "order" }, h4a);
+  check(r4c.status === 200, `the retry finished the purchase: ${JSON.stringify(await r4c.json())}`, `the retry got ${r4c.status}`);
+  check(srv.runs.count - before4 === 1, "the paid work ran once for the whole order", `the paid work ran ${srv.runs.count - before4} times`);
+  const s4 = settlementOf(r4c);
+  if (s4?.transaction) note(`settlement: ${txLink(s4.transaction)}`);
+
+  // 5 — the server dies after the money moved
+  step(5, "The server dies right after the money moves, before it can reply");
   crash.armed = true;
-  const h4 = await b.sign(srv.url, { question: "crash" });
-  void b.post(srv.url, { question: "crash" }, h4).catch(() => {});
+  const h5 = await b.sign(srv.url, { question: "crash" });
+  void b.post(srv.url, { question: "crash" }, h5).catch(() => {});
   for (let i = 0; i < 300 && !crash.settledTx; i++) await sleep(100);
   srv.stop();
   check(!!crash.settledTx, "the buyer has been charged, and the server is gone", "the settlement never happened");
@@ -362,16 +403,16 @@ async function main() {
     if (recovered !== "delivered") await sleep(2_000); // the RPC can trail the chain by a block or two
   }
   check(recovered === "delivered", "the sweep asked the chain, found the payment, and marked it delivered", `the sweep left it as "${recovered || "unchanged"}"`);
-  const r4 = await b.post(srv.url, { question: "crash" }, h4);
-  check(r4.status === 200, `the buyer's retry collected the answer: ${JSON.stringify(await r4.json())}`, `the retry got ${r4.status}`);
+  const r5 = await b.post(srv.url, { question: "crash" }, h5);
+  check(r5.status === 200, `the buyer's retry collected the answer: ${JSON.stringify(await r5.json())}`, `the retry got ${r5.status}`);
   check(srv.runs.count === 0, "the new server did not redo the work", `the new server ran the work ${srv.runs.count} times`);
   srv.stop();
 
   // the books
-  step(5, "Check the books");
+  step(6, "Check the books");
   await sleep(LIVE ? 3_000 : 0);
   const n = await charges();
-  check(n === 3n, `the buyer was charged exactly 3 times for 3 purchases${LIVE ? " (read from the chain)" : ""}`, `charges counted: ${n}, expected 3`);
+  check(n === 4n, `the buyer was charged exactly 4 times for 4 purchases${LIVE ? " (read from the chain)" : ""}`, `charges counted: ${n}, expected 4`);
   await db.close();
 
   say(failures === 0 ? "\nEverything held." : `\n${failures} check(s) failed.`);

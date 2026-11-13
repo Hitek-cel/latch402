@@ -17,7 +17,7 @@ lifecycle hooks.
 
 ## Status
 
-**0.3.1. Not yet used in production by anyone, including its author.**
+**0.3.2. Not yet used in production by anyone, including its author.**
 
 - It plugs into the official SDK (`@x402/core` 2.30 and 2.31, tested with `@x402/hono`
   and `@x402/fetch`). The official client pays an official server through it.
@@ -46,11 +46,12 @@ npm run example
 
 This starts a real HTTP server on `127.0.0.1`, protects it with Latch over an
 in-process PostgreSQL, and pays it with the official x402 client. Then it
-breaks things on purpose: a lost reply, three copies of one payment, and a
-server that dies right after the money moved. The chain is simulated, so it
-needs no network, keys or wallet.
+breaks things on purpose: a lost reply, three copies of one payment, a buyer
+told "failed" who signs again for the same order, and a server that dies right
+after the money moved. The chain is simulated, so it needs no network, keys or
+wallet.
 
-`npm run example:testnet` runs the same five steps live on Base Sepolia,
+`npm run example:testnet` runs the same steps live on Base Sepolia,
 through the public x402 facilitator, with free test USDC. It creates a
 throwaway wallet in `.latch-demo/` (ignored by git) and tells you how to fund
 it from Circle's faucet. It refuses any network but Base Sepolia and prints
@@ -245,8 +246,20 @@ escrow contract.
   if the retry carries the **same** identifier: the stock client sends none,
   and `appendPaymentIdentifierToExtensions(extensions)` called without an id
   generates a fresh random one each time, which Latch sees as a new purchase.
-  Derive it from something stable, such as an order or invoice id, for example
-  `appendPaymentIdentifierToExtensions(extensions, "order_" + orderId)`.
+  Derive it from something stable, such as an order or invoice id.
+  `purchasePaymentId` does that for the buyer's side:
+
+  ```ts
+  import { appendPaymentIdentifierToExtensions } from "@x402/extensions/payment-identifier";
+  import { purchasePaymentId } from "latch402/x402";
+
+  const payload = await client.createPaymentPayload(paymentRequired);
+  appendPaymentIdentifierToExtensions(payload.extensions ?? {}, purchasePaymentId(orderId));
+  ```
+
+  Same order, same identifier, on every retry and after a restart. If order ids
+  can repeat across buyers, pass your wallet address too:
+  `purchasePaymentId(walletAddress, orderId)`.
   Without a stable identifier, Latch cannot tell a re-signed purchase from a
   new one. (Thanks to [Selliksss](https://github.com/Selliksss), who caught
   this by running the demo.)
@@ -267,7 +280,7 @@ escrow contract.
 
 ## What is proven
 
-`npm test` — 130 tests. No network, no server, no API keys. The Postgres suites
+`npm test` — 132 tests. No network, no server, no API keys. The Postgres suites
 run a real PostgreSQL in-process via PGlite.
 
 - **The bridge against the real SDK** — `@x402/fetch` signs real EIP-3009

@@ -17,3 +17,4 @@ export {
   postgresAuthorizedPaymentStorage,
 } from "./auth-capture-storage.ts";
 export type { AuthorizedPaymentStore, AuthorizedPaymentUpdate } from "./auth-capture-storage.ts";
+export { purchasePaymentId } from "./payment-id.ts";

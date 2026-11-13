@@ -3,6 +3,19 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
+## 0.3.2 — 2026-11-14
+
+- **Added `purchasePaymentId(...parts)`** in `latch402/x402`: a payment
+  identifier derived from the purchase, for the buyer's side. The
+  `payment-identifier` extension only stops a re-signed retry from being
+  charged twice when the retry carries the same identifier; the stock client
+  sends none, and generating a random one per call protects nothing. Reported
+  by Selliksss after running the demo.
+- **The demo has a new step:** a buyer told "failed" signs a new payment for
+  the same order. The second signature is refused, and retrying the original
+  finishes the purchase with one charge.
+- The README states the identifier requirement plainly.
+
 ## 0.3.1 — 2026-11-13
 
 No change to the library's behaviour. Documentation, tests and a demo.
