@@ -3,6 +3,24 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
+## 0.3.1 — 2026-11-13
+
+No change to the library's behaviour. Documentation, tests and a demo.
+
+- **Ran live on Base Sepolia** through the public x402 facilitator with test
+  USDC. All five demo steps held, and the chain showed exactly three charges
+  for three purchases. The README's status section now says what has and has
+  not been run.
+- **A runnable demo** in the repository: `npm run example` (offline, no keys)
+  and `npm run example:testnet` (Base Sepolia). It is not part of the npm
+  package.
+- **Documented a limit:** while a settle is unresolved, a client that signs a
+  new payment can be charged twice unless the route declares the
+  `payment-identifier` extension. The quickstart now declares it, and two
+  tests pin both cases.
+- Tested against `@x402/core` 2.31.0 as well as 2.30.0.
+- The author is credited in the README and the package metadata.
+
 ## 0.3.0 — 2026-11
 
 Latch now works with the official x402 SDK instead of beside it.

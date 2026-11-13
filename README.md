@@ -17,7 +17,7 @@ lifecycle hooks.
 
 ## Status
 
-**0.3.0. Not yet used in production by anyone, including its author.**
+**0.3.1. Not yet used in production by anyone, including its author.**
 
 - It plugs into the official SDK (`@x402/core` 2.30 and 2.31, tested with `@x402/hono`
   and `@x402/fetch`). The official client pays an official server through it.
