@@ -34,6 +34,9 @@ lifecycle hooks.
 If you try it and it breaks, that report is worth more to this project than a
 star. [Open an issue.](https://github.com/Hitek-cel/latch402/issues)
 
+The story behind it — what the official SDK does on its own, what broke, and
+what changed upstream — is in [docs/writeup.md](docs/writeup.md).
+
 ## See it work
 
 ```bash
