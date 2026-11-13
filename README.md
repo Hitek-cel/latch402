@@ -23,9 +23,12 @@ lifecycle hooks.
   and `@x402/fetch`). The official client pays an official server through it.
 - Every guarantee below is a test in this repository. The chain in those tests
   is a fake; the facilitator's failures are injected.
-- The settlement oracle has been checked read-only against the real USDC
-  contract on Base. **Nothing here has been run against a live facilitator or
-  with real money yet.**
+- **It has run live on Base Sepolia** (2026-11-13), through the public x402
+  facilitator, with test USDC: `npm run example:testnet`. All five steps held,
+  and the chain showed exactly three charges for three purchases — the lost
+  reply, the duplicate copies and the crash recovery moved nothing extra.
+- **It has not handled real money.** Nothing here has run on mainnet or in
+  production.
 - It covers one payment flow of one scheme. See [Limits](#limits).
 
 If you try it and it breaks, that report is worth more to this project than a
