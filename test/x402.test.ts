@@ -1041,7 +1041,7 @@ test("x402: a buyer told 'failed' who signs again for the same order is not char
 // ── the report page ───────────────────────────────────────────────────────
 
 test("journalReport: a read-only page of where every payment ended, safe to open", async () => {
-  const { journalReport } = await import("../src/report.ts");
+  const { journalReport, journalReportData } = await import("../src/report.ts");
   const db = await PGlite.create();
   const sql = pgClient(db);
   await migrate(sql);
@@ -1049,16 +1049,30 @@ test("journalReport: a read-only page of where every payment ended, safe to open
 
   assert.equal((await post(w.app, { q: "a" }, await sign(w, { q: "a" }))).status, 200); // delivered
   assert.equal((await post(w.app, { fail: true }, await sign(w, { fail: true }))).status, 500); // void
-  const html = await journalReport(sql, { title: "<script>alert(1)</script>", now: Date.UTC(2026, 10, 14) });
 
-  assert.match(html, /Payments recorded<\/span><strong>2</);
-  assert.match(html, /Delivered<\/span><strong>1</);
-  assert.match(html, /Not charged<\/span><strong>1</);
-  assert.match(html, /Collected \(USDC\)<\/span><strong>0\.01</);
-  assert.match(html, /producing → settling → delivered/);
+  const data = await journalReportData(sql, { now: Date.UTC(2026, 10, 14) });
+  assert.equal(data.payments.length, 2);
+  assert.deepEqual(data.payments.map((p) => p.outcome).sort(), ["delivered", "void"]);
+  const delivered = data.payments.find((p) => p.outcome === "delivered");
+  assert.equal(delivered?.amount, "10000");
+  assert.equal(delivered?.reference, "0xtx1");
+  assert.deepEqual(delivered?.steps.map((s) => s.state), ["quoted", "producing", "settling", "delivered"]);
+  assert.match(delivered?.payer ?? "", /^0x[0-9a-fA-F]{40}$/);
+  assert.equal(data.receipts, 1);
+  assert.equal(data.truncated, false);
+  assert.equal((await journalReportData(sql, { limit: 1 })).truncated, true);
+  assert.doesNotMatch(JSON.stringify(data), /tokenHash/, "the replay token's hash stays out of the report");
+
+  const hostile = "</script><script>alert(1)</script>";
+  const html = await journalReport(sql, { title: hostile, now: Date.UTC(2026, 10, 14) });
   assert.match(html, /Content-Security-Policy" content="default-src 'none'/, "the page may not load or send anything");
-  assert.doesNotMatch(html, /<script>alert/, "everything shown is escaped");
-  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-  assert.doesNotMatch(html, /https?:\/\/(?!sepolia\.basescan\.org|basescan\.org|www\.w3\.org)/, "no external resources");
+  assert.doesNotMatch(html, /<script>alert/, "a hostile title cannot become markup");
+  assert.equal(html.split("</script>").length - 1, 3, "exactly the page's own three scripts close");
+  assert.doesNotMatch(html, /\b(src|href)="https?:/, "no external resources");
+
+  // The data the page draws from is the same data, carried as inert JSON.
+  const embedded = html.match(/<script id="latch-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1] ?? "";
+  assert.equal(JSON.parse(embedded).title, hostile);
+  assert.equal(JSON.parse(embedded).payments.length, 2);
   await db.close();
 });

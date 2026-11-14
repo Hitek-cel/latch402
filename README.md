@@ -17,7 +17,7 @@ lifecycle hooks.
 
 ## Status
 
-**0.4.0. Not yet used in production by anyone, including its author.**
+**0.4.1. Not yet used in production by anyone, including its author.**
 
 - It plugs into the official SDK (`@x402/core` 2.30 and 2.31, tested with `@x402/hono`
   and `@x402/fetch`). The official client pays an official server through it.
@@ -65,22 +65,30 @@ npm run report            # after npm run example
 npm run report:testnet    # after npm run example:testnet
 ```
 
-This reads the demo's journal and opens one page in your browser: headline
-numbers, where every payment ended (delivered, not charged, in progress,
-needs a human), activity over time, the recoveries Latch made, and every
-payment with its path and a link to its settlement on the block explorer.
+This reads the demo's journal and opens a dashboard in your browser:
+
+- **Headline numbers**: collected, payments, buyers, median time to deliver,
+  and anything that needs a human.
+- **Where every payment ended**, activity over time, what sold by route, top
+  buyers, and the recoveries Latch made.
+- **Every payment**, sortable, with a step-by-step timeline when you click a
+  row and a link to its settlement on the block explorer.
+- **Filters** for time range, outcome and free-text search that scope the
+  whole page, **CSV export** of what is shown, a table view of the chart, and
+  a **light / dark / auto** theme switch that remembers your choice.
 
 The page is read-only and self-contained: it loads nothing from the network,
 and a Content-Security-Policy forbids it from trying. On your own server the
 same page comes from one call against your Postgres journal:
 
 ```ts
-import { journalReport } from "latch402";
+import { journalReport, journalReportData } from "latch402";
 
-const html = await journalReport(sql, { title: "Payments" });
+const html = await journalReport(sql, { title: "Payments", refreshSeconds: 60 });
+const data = await journalReportData(sql); // the same data as plain objects, to build on
 ```
 
-Serve it only to yourself: it lists your payments.
+Serve it only to yourself: it lists your payments and your buyers' addresses.
 
 ## Use it with the official SDK
 

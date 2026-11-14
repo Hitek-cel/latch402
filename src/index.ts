@@ -79,5 +79,11 @@ export type {
 export { ledgerFacilitator, makeProof, parseProof } from "./adapters/ledger-facilitator.ts";
 export type { LedgerFacilitator, LedgerFaults } from "./adapters/ledger-facilitator.ts";
 
-export { journalReport } from "./report.ts";
-export type { JournalReportOptions } from "./report.ts";
+export { journalReport, journalReportData } from "./report.ts";
+export type {
+  JournalReportData,
+  JournalReportOptions,
+  ReportOutcome,
+  ReportPayment,
+  ReportStep,
+} from "./report.ts";

@@ -3,6 +3,18 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
+## 0.4.1 — 2026-11-14
+
+- **The report is now a dashboard.** Filters for time range, outcome and
+  search scope the whole page; the payments table sorts, expands each payment
+  into a step-by-step timeline, and exports to CSV; the activity chart splits
+  delivered from not delivered and has a table view; new sections show what
+  sold by route, top buyers and median time to deliver.
+- **Light, dark and auto themes**, remembered between visits.
+- **Added `journalReportData(sql)`**: the same data as plain objects, for
+  anything else that wants to build on the journal. `journalReport` gains a
+  `refreshSeconds` option for a page served live.
+
 ## 0.4.0 — 2026-11-14
 
 - **Added `journalReport(sql)`**: a read-only HTML page built from a Postgres
