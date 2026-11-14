@@ -1,6 +1,6 @@
 {
   "name": "latch402",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Settlement safety for paid HTTP and x402: charged if and only if delivered.",
   "type": "module",
   "exports": {
@@ -38,7 +38,9 @@
     "build:console": "node scripts/build-console.mjs",
     "prepublishOnly": "npm run typecheck && npm test && npm run test:dist",
     "example": "node examples/x402-demo.ts",
-    "example:testnet": "node examples/x402-demo.ts --testnet"
+    "example:testnet": "node examples/x402-demo.ts --testnet",
+    "report": "node examples/report.ts",
+    "report:testnet": "node examples/report.ts --testnet"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",

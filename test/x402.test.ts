@@ -1037,3 +1037,28 @@ test("x402: a buyer told 'failed' who signs again for the same order is not char
   assert.equal(w.chain.size, 1);
   assert.equal(w.control.handlerRuns, 1);
 });
+
+// ── the report page ───────────────────────────────────────────────────────
+
+test("journalReport: a read-only page of where every payment ended, safe to open", async () => {
+  const { journalReport } = await import("../src/report.ts");
+  const db = await PGlite.create();
+  const sql = pgClient(db);
+  await migrate(sql);
+  const w = world({}, postgresJournal(sql));
+
+  assert.equal((await post(w.app, { q: "a" }, await sign(w, { q: "a" }))).status, 200); // delivered
+  assert.equal((await post(w.app, { fail: true }, await sign(w, { fail: true }))).status, 500); // void
+  const html = await journalReport(sql, { title: "<script>alert(1)</script>", now: Date.UTC(2026, 10, 14) });
+
+  assert.match(html, /Payments recorded<\/span><strong>2</);
+  assert.match(html, /Delivered<\/span><strong>1</);
+  assert.match(html, /Not charged<\/span><strong>1</);
+  assert.match(html, /Collected \(USDC\)<\/span><strong>0\.01</);
+  assert.match(html, /producing → settling → delivered/);
+  assert.match(html, /Content-Security-Policy" content="default-src 'none'/, "the page may not load or send anything");
+  assert.doesNotMatch(html, /<script>alert/, "everything shown is escaped");
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /https?:\/\/(?!sepolia\.basescan\.org|basescan\.org|www\.w3\.org)/, "no external resources");
+  await db.close();
+});

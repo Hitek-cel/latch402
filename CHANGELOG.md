@@ -3,6 +3,16 @@
 0.3.0 is the first version published to npm. Earlier versions existed only in
 this repository.
 
+## 0.4.0 — 2026-11-14
+
+- **Added `journalReport(sql)`**: a read-only HTML page built from a Postgres
+  journal — headline numbers, where every payment ended, activity over time,
+  recoveries, and each payment with its path and settlement link. The page is
+  self-contained and loads nothing from the network.
+- **`npm run report` / `npm run report:testnet`** open that page for the demo's
+  payments. The demo now keeps its journal in `.latch-demo/` between runs and
+  signs receipts with a fixed demo secret.
+
 ## 0.3.2 — 2026-11-14
 
 - **Added `purchasePaymentId(...parts)`** in `latch402/x402`: a payment

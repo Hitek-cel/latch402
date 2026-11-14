@@ -37,6 +37,7 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { migrate, postgresJournal, type SqlClient, type SqlExecutor } from "../src/adapters/postgres-journal.ts";
+import { hmacSigner } from "../src/receipt.ts";
 import type { Journal } from "../src/ports.ts";
 import { eip3009Oracle, latchX402, purchasePaymentId, type SettlementOracle } from "../src/x402/index.ts";
 
@@ -53,6 +54,8 @@ const PRICE_UNITS = 10_000n; // 0.01 USDC, 6 decimals
 const WALLET_DIR = ".latch-demo";
 const WALLET_FILE = `${WALLET_DIR}/wallet.json`;
 const STALE_MS = LIVE ? 20_000 : 1_500;
+const DB_OFFLINE = `${WALLET_DIR}/db-offline`;
+const DB_TESTNET = `${WALLET_DIR}/db-testnet`;
 
 // ── output ─────────────────────────────────────────────────────────────────
 const say = (s = "") => console.log(s);
@@ -164,7 +167,9 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 
 async function startServer(journal: Journal, facilitator: FacilitatorClient, oracle: SettlementOracle, payTo: string) {
   const server = new x402ResourceServer(facilitator).register(NETWORK, new ExactEvmScheme());
-  const latch = latchX402(server, { journal, oracle, staleMs: STALE_MS });
+  // Receipts are signed with a fixed demo secret: fine for a demo, never for production.
+  const signer = hmacSigner("latch-demo-receipts-not-a-production-secret");
+  const latch = latchX402(server, { journal, oracle, signer, staleMs: STALE_MS });
   const runs = { count: 0 };
 
   const app = new Hono();
@@ -316,8 +321,10 @@ async function main() {
     payTo = privateKeyToAccount(generatePrivateKey()).address;
   }
 
-  // One database for the whole run, so a "restarted" server finds what the dead one wrote.
-  const db = await PGlite.create();
+  // One database that outlives the run, so a "restarted" server finds what the
+  // dead one wrote, and `npm run report` can show every run afterwards.
+  mkdirSync(WALLET_DIR, { recursive: true });
+  const db = await PGlite.create(LIVE ? DB_TESTNET : DB_OFFLINE);
   const exec = (runner: { query: (t: string, p?: unknown[]) => Promise<{ rows: unknown[]; affectedRows?: number }> }): SqlExecutor => ({
     async query<R>(text: string, params: readonly unknown[] = []) {
       const r = await runner.query(text, [...params]);
@@ -419,8 +426,10 @@ async function main() {
   if (LIVE) {
     say("\nThe test wallets stay in .latch-demo/ (ignored by git) for the next run.");
     say("To forget them:  Remove-Item -Recurse .latch-demo   (PowerShell)   or   rm -rf .latch-demo");
+    say("To see every live payment so far as a page:  npm run report:testnet");
   } else {
-    say("\nTo run the same thing on Base Sepolia with free test USDC:  npm run example:testnet");
+    say("\nTo see every payment so far as a page:  npm run report");
+    say("To run the same thing on Base Sepolia with free test USDC:  npm run example:testnet");
   }
   process.exitCode = failures === 0 ? 0 : 1;
 }

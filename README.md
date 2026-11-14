@@ -17,7 +17,7 @@ lifecycle hooks.
 
 ## Status
 
-**0.3.2. Not yet used in production by anyone, including its author.**
+**0.4.0. Not yet used in production by anyone, including its author.**
 
 - It plugs into the official SDK (`@x402/core` 2.30 and 2.31, tested with `@x402/hono`
   and `@x402/fetch`). The official client pays an official server through it.
@@ -57,6 +57,30 @@ through the public x402 facilitator, with free test USDC. It creates a
 throwaway wallet in `.latch-demo/` (ignored by git) and tells you how to fund
 it from Circle's faucet. It refuses any network but Base Sepolia and prints
 every request it makes.
+
+## See your payments
+
+```bash
+npm run report            # after npm run example
+npm run report:testnet    # after npm run example:testnet
+```
+
+This reads the demo's journal and opens one page in your browser: headline
+numbers, where every payment ended (delivered, not charged, in progress,
+needs a human), activity over time, the recoveries Latch made, and every
+payment with its path and a link to its settlement on the block explorer.
+
+The page is read-only and self-contained: it loads nothing from the network,
+and a Content-Security-Policy forbids it from trying. On your own server the
+same page comes from one call against your Postgres journal:
+
+```ts
+import { journalReport } from "latch402";
+
+const html = await journalReport(sql, { title: "Payments" });
+```
+
+Serve it only to yourself: it lists your payments.
 
 ## Use it with the official SDK
 
@@ -281,7 +305,7 @@ escrow contract.
 
 ## What is proven
 
-`npm test` — 132 tests. No network, no server, no API keys. The Postgres suites
+`npm test` — 133 tests. No network, no server, no API keys. The Postgres suites
 run a real PostgreSQL in-process via PGlite.
 
 - **The bridge against the real SDK** — `@x402/fetch` signs real EIP-3009
